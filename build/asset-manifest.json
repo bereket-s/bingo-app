@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "https://nonhabitably-prelabial-bernardo.ngrok-free.dev/static/css/main.a20c80e7.css",
+    "main.js": "https://nonhabitably-prelabial-bernardo.ngrok-free.dev/static/js/main.694cbc51.js",
+    "index.html": "https://nonhabitably-prelabial-bernardo.ngrok-free.dev/index.html",
+    "main.a20c80e7.css.map": "https://nonhabitably-prelabial-bernardo.ngrok-free.dev/static/css/main.a20c80e7.css.map",
+    "main.694cbc51.js.map": "https://nonhabitably-prelabial-bernardo.ngrok-free.dev/static/js/main.694cbc51.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.a20c80e7.css",
+    "static/js/main.694cbc51.js"
+  ]
+}
