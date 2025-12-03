@@ -288,24 +288,34 @@ const startBot = (database, socketIo, startGameLogic) => {
   // --- CONTACT SHARED (REGISTRATION) ---
   bot.on('contact', async (msg) => {
     const tgId = msg.from.id;
-    const username = msg.contact.first_name || 'Player';
     const phone = cleanPhone(msg.contact.phone_number);
     const chatId = msg.chat.id;
     if (msg.contact.user_id !== tgId) return;
     
     try {
-        const result = await linkTelegramAccount(phone, tgId, username);
-        if (result.error) {
-             bot.sendMessage(chatId, `❌ **Error:** ${result.error}`, { reply_markup: userKeyboard }).catch(()=>{});
+        // Check if user exists by phone
+        const phoneCheck = await db.query("SELECT * FROM users WHERE phone_number = $1", [phone]);
+        
+        if (phoneCheck.rows.length > 0) {
+            // User exists -> Auto-link/login
+            const existingUser = phoneCheck.rows[0];
+            const result = await linkTelegramAccount(phone, tgId, existingUser.username);
+            
+            if (result.error) {
+                 bot.sendMessage(chatId, `❌ **Error:** ${result.error}`, { reply_markup: userKeyboard });
+            } else {
+                 if (await isAdmin(tgId) || await isSuperAdmin(tgId)) {
+                     const kb = (await isSuperAdmin(tgId)) ? superAdminKeyboard : adminKeyboard;
+                     bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nWelcome back: ${result.user.username}`, { reply_markup: kb, parse_mode: "Markdown" }).catch(()=>{});
+                 } else {
+                     bot.sendMessage(chatId, `✅ **Welcome back, ${result.user.username}!**`, { reply_markup: userKeyboard, parse_mode: "Markdown" }).catch(()=>{});
+                 }
+                 triggerStart(chatId, result.user);
+            }
         } else {
-             // IF USER IS ADMIN, GIVE ADMIN KEYBOARD
-             if (await isAdmin(tgId) || await isSuperAdmin(tgId)) {
-                 const kb = (await isSuperAdmin(tgId)) ? superAdminKeyboard : adminKeyboard;
-                 bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nRegistered as: ${result.user.username}`, { reply_markup: kb, parse_mode: "Markdown" }).catch(()=>{});
-             } else {
-                 bot.sendMessage(chatId, `✅ **Registered: ${result.user.username}!**`, { reply_markup: userKeyboard, parse_mode: "Markdown" }).catch(()=>{});
-             }
-             triggerStart(chatId, result.user);
+            // New User -> Ask for Username
+            chatStates[chatId] = { step: 'awaiting_initial_username', regPhone: phone };
+            bot.sendMessage(chatId, "👤 **Almost done!**\n\nPlease enter the **Username** you want to use:", { reply_markup: { force_reply: true }, parse_mode: "Markdown" });
         }
     } catch (err) { console.error(err); }
   });
@@ -790,6 +800,26 @@ const startBot = (database, socketIo, startGameLogic) => {
                 bot.sendMessage(chatId, `✅ Processed ${successCount} users.`).catch(()=>{});
                 bot.sendMessage(chatId, `📩 *Forward this invite to all of them:*`, { parse_mode: "Markdown" }).catch(()=>{});
                 bot.sendMessage(chatId, getInviteText(), { parse_mode: "Markdown" }).catch(()=>{});
+            }
+            // --- NEW: Handle Initial Username Input (after Contact Share) ---
+            else if(state.step === 'awaiting_initial_username') { 
+                const username = text.trim();
+                if(username.length < 3) return bot.sendMessage(chatId, "❌ Username too short (min 3 chars).");
+                
+                const result = await linkTelegramAccount(state.regPhone, tgId, username);
+                delete chatStates[chatId]; 
+
+                if (result.error) {
+                     bot.sendMessage(chatId, `❌ **Error:** ${result.error}\n\nTry /start again.`, { reply_markup: userKeyboard });
+                } else {
+                     if (await isAdmin(tgId) || await isSuperAdmin(tgId)) {
+                         const kb = (await isSuperAdmin(tgId)) ? superAdminKeyboard : adminKeyboard;
+                         bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nRegistered as: ${result.user.username}`, { reply_markup: kb, parse_mode: "Markdown" });
+                     } else {
+                         bot.sendMessage(chatId, `✅ **Registered!**\nWelcome, ${result.user.username}!`, { reply_markup: userKeyboard, parse_mode: "Markdown" });
+                     }
+                     triggerStart(chatId, result.user);
+                }
             }
             else if (state.step === 'awaiting_deposit_amount') {
                 const amount = parseInt(text);
