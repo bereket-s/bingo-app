@@ -92,9 +92,11 @@ const TRANSLATIONS = {
     p_any_line_icon: "↔️↕️ ማንኛውም"
   }
 };
+
 const getT = (lang) => (key) => TRANSLATIONS[lang][key] || TRANSLATIONS['en'][key] || key;
 
 const PatternDisplay = ({ pattern, t }) => {
+    // ... (Same grid logic as before) ...
     const getGrid = (p) => {
         const g = Array(5).fill(null).map(() => Array(5).fill(false));
         const fill = (r,c) => { if(r>=0&&r<5&&c>=0&&c<5) g[r][c] = true; };
@@ -134,7 +136,9 @@ const PatternDisplay = ({ pattern, t }) => {
 };
 
 function App() {
-  const [lang, setLang] = useState('en'); 
+  const [lang, setLang] = useState(localStorage.getItem('bingo_lang') || 'en'); 
+  const langRef = useRef(lang); // FIX: Ref to track language in sockets
+
   const [auth, setAuth] = useState(null);
   const [player, setPlayer] = useState({ username: "Loading...", points: 0, isPremium: false });
   const [prefs, setPrefs] = useState({ autoDaub: true, autoBingo: true });
@@ -160,8 +164,9 @@ function App() {
 
   const t = getT(lang);
 
-  // Sync ref
+  // Sync refs
   useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
+  useEffect(() => { langRef.current = lang; }, [lang]); // Sync lang ref
 
   useEffect(() => {
     if (!document.getElementById('confetti-script')) {
@@ -183,7 +188,8 @@ function App() {
       isPlaying.current = true;
       
       const filename = audioQueue.current.shift();
-      audioRef.current.src = `/audio/${lang}/${filename}.mp3`;
+      // FIX: Use ref to get CURRENT language
+      audioRef.current.src = `/audio/${langRef.current}/${filename}.mp3`;
       
       try {
           await audioRef.current.play();
@@ -272,7 +278,11 @@ function App() {
       }
   };
 
-  const toggleLanguage = () => setLang(prev => prev === 'en' ? 'am' : 'en');
+  const toggleLanguage = () => {
+      const newLang = lang === 'en' ? 'am' : 'en';
+      setLang(newLang);
+      localStorage.setItem('bingo_lang', newLang); 
+  };
   
   const toggleSettings = () => setShowSettings(!showSettings);
   const togglePref = (key) => {

@@ -9,7 +9,7 @@ let botUsername = "BingoBot";
 
 const cleanPhone = (p) => p ? p.replace(/\D/g, '') : '';
 
-// Helper to prevent Telegram Markdown errors (escapes special chars like _)
+// Helper to prevent Telegram Markdown errors
 const escapeMarkdown = (text) => {
     if (!text) return '';
     return String(text).replace(/[_*[\]()`]/g, '\\$&');
@@ -35,14 +35,17 @@ const startBot = (database, socketIo, startGameLogic) => {
       return res.rows.length > 0 && (res.rows[0].role === 'admin' || res.rows[0].role === 'super_admin');
   };
 
-  // Check if user is SUPER admin (First in env list OR Database role 'super_admin')
+  // Check if user is SUPER admin
   const isSuperAdmin = async (id) => {
       if (id === superAdminId) return true;
       const res = await db.query("SELECT role FROM users WHERE telegram_id = $1", [id]);
       return res.rows.length > 0 && res.rows[0].role === 'super_admin';
   };
 
-  if (!token || !publicUrl) return;
+  if (!token) {
+      console.error("❌ TELEGRAM_TOKEN is missing in .env!");
+      return;
+  }
   
   const bot = new TelegramBot(token, { polling: true });
   
@@ -104,7 +107,11 @@ const startBot = (database, socketIo, startGameLogic) => {
 
   // --- GAME END CALLBACK ---
   setGameEndCallback((gameId, winnerText) => {
-      const msg = `🏁 *GAME #${gameId} FINISHED!*\n\n🏆 Winner: ${escapeMarkdown(winnerText)}\n\n👇 *Admin Menu Restored:*`;
+      const safeWinner = escapeMarkdown(winnerText);
+      const msg = `🏁 *GAME #${gameId} FINISHED!* / *ጨዋታ #${gameId} ተጠናቀቀ!*\n\n` +
+                  `🏆 Winner: ${safeWinner}\n` +
+                  `🏆 አሸናፊ: ${safeWinner}\n\n` +
+                  `👇 *Admin Menu Restored:*`;
       broadcastToAdmins(msg, { parse_mode: "Markdown" });
   });
 
@@ -118,8 +125,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       } catch (e) { console.error("DB Admin Fetch Error", e); }
 
       const allAdmins = [...new Set([...envAdmins, ...dbAdmins])];
-      
-      if (allAdmins.length === 0) console.error("⚠️ No Admins Configured");
       
       for (const id of allAdmins) {
           let opts = { ...options };
@@ -158,6 +163,12 @@ const startBot = (database, socketIo, startGameLogic) => {
   };
 
   const triggerStart = async (chatId, user) => {
+      if (!publicUrl) {
+          bot.sendMessage(chatId, "❌ **System Error:** PUBLIC_URL is missing in settings.\nPlease contact Admin to fix the server.");
+          console.error("❌ Missing PUBLIC_URL in .env");
+          return;
+      }
+
       try {
         const token = require('crypto').randomUUID();
         await db.query('UPDATE users SET session_token = $1 WHERE id = $2', [token, user.id]);
@@ -205,7 +216,7 @@ const startBot = (database, socketIo, startGameLogic) => {
     }
   });
 
-  // --- PHOTO HANDLER (FIX FOR DEPOSITS) ---
+  // --- PHOTO HANDLER ---
   bot.on('photo', async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
@@ -214,7 +225,7 @@ const startBot = (database, socketIo, startGameLogic) => {
     if (!state) return;
 
     if (state.step === 'awaiting_deposit_proof' || state.step === 'awaiting_premium_proof') {
-        const photo = msg.photo[msg.photo.length - 1]; // Get highest quality photo
+        const photo = msg.photo[msg.photo.length - 1]; 
         const fileId = photo.file_id;
         const user = await getUser(tgId);
 
@@ -245,7 +256,6 @@ const startBot = (database, socketIo, startGameLogic) => {
 
             bot.sendMessage(chatId, "✅ *Proof Received!*\nSent to admins for approval.", { parse_mode: "Markdown", reply_markup: userKeyboard });
             
-            // Prepare Admin Notification
             let caption = "";
             let callbackPrefix = "";
             const safeUser = escapeMarkdown(user.username);
@@ -288,13 +298,19 @@ const startBot = (database, socketIo, startGameLogic) => {
         if (result.error) {
              bot.sendMessage(chatId, `❌ **Error:** ${result.error}`, { reply_markup: userKeyboard }).catch(()=>{});
         } else {
-             bot.sendMessage(chatId, `✅ Registered: ${result.user.username}!`, { reply_markup: userKeyboard }).catch(()=>{});
+             // IF USER IS ADMIN, GIVE ADMIN KEYBOARD
+             if (await isAdmin(tgId) || await isSuperAdmin(tgId)) {
+                 const kb = (await isSuperAdmin(tgId)) ? superAdminKeyboard : adminKeyboard;
+                 bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nRegistered as: ${result.user.username}`, { reply_markup: kb, parse_mode: "Markdown" }).catch(()=>{});
+             } else {
+                 bot.sendMessage(chatId, `✅ **Registered: ${result.user.username}!**`, { reply_markup: userKeyboard, parse_mode: "Markdown" }).catch(()=>{});
+             }
              triggerStart(chatId, result.user);
         }
     } catch (err) { console.error(err); }
   });
 
-  // --- CALLBACK QUERY HANDLER (BUTTON CLICKS) ---
+  // --- CALLBACK QUERY HANDLER ---
   bot.on('callback_query', async (cq) => {
     const action = cq.data;
     const msg = cq.message;
@@ -335,7 +351,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 cards: countRes.rows.length ? (parseInt(countRes.rows[0].cards) || 0) : 0
             };
             
-            const gameRes = await db.query("SELECT bet_amount, status, pot FROM games WHERE id = $1", [gameId]);
+            const gameRes = await db.query("SELECT bet_amount, status, pot, winning_pattern FROM games WHERE id = $1", [gameId]);
             if (gameRes.rows.length === 0) return bot.answerCallbackQuery(cq.id, { text: "Game not found" });
             const betAmt = parseInt(gameRes.rows[0].bet_amount) || 0;
             const totalCollected = stats.cards * betAmt;
@@ -352,6 +368,10 @@ const startBot = (database, socketIo, startGameLogic) => {
                  
                  try {
                     await bot.editMessageText(newText, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: kb });
+                    // Send invite link again for convenience on refresh
+                    const pattern = gameRes.rows[0].winning_pattern;
+                    const inviteLink = `https://t.me/${botUsername}?start=bingo`;
+                    const inviteMsg = `📢 **Game #${gameId} Open!**\nBet: ${betAmt}\nRule: ${pattern.replace('_', ' ').toUpperCase()}\n👉 [Join Game](${inviteLink})`;
                  } catch(e) { }
                  await bot.answerCallbackQuery(cq.id, { text: "Stats Refreshed!" });
             } 
@@ -396,7 +416,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             return;
         }
 
-        // 4. APPROVALS (DEPOSIT, WITHDRAW, PREMIUM)
+        // 4. APPROVALS
         if (action.startsWith('dep_') || action.startsWith('wd_') || action.startsWith('prem_')) {
             const parts = action.split('_'); 
             const type = parts[0]; 
@@ -495,12 +515,19 @@ const startBot = (database, socketIo, startGameLogic) => {
     if (mainMenuButtons.some(btn => text.startsWith(btn))) {
         if (chatStates[chatId]) delete chatStates[chatId];
     }
-    // ---------------------------------------------------
 
     const user = await getUser(tgId);
 
     if (text.startsWith("🚀 Play")) {
-        if (user) triggerStart(chatId, user);
+        if (user) {
+            triggerStart(chatId, user);
+        } else {
+            // FIX: EXPLICITLY HANDLE UNLINKED ADMINS
+            bot.sendMessage(chatId, "⚠️ **Account Not Linked**\n\nYou are an Admin, but your Telegram account isn't linked to a player profile yet.\n\n👇 **Press the button below to link:**", { 
+                reply_markup: shareContactKeyboard, 
+                parse_mode: "Markdown" 
+            });
+        }
         return;
     }
     
@@ -759,7 +786,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 delete chatStates[chatId];
                 bot.sendMessage(chatId, "✅ **Request Sent**", { reply_markup: userKeyboard }).catch(()=>{});
                 
-                // FIX: Escape Markdown for user input
                 const safeUser = escapeMarkdown(user.username);
                 const safeInfo = escapeMarkdown(text);
                 const adminMsg = `🚨 *Withdrawal*\nUser: ${safeUser}\nAmt: ${amount}\nInfo: ${safeInfo}`;
@@ -807,9 +833,25 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const res = await db.query('INSERT INTO games (bet_amount, status, pot, winning_pattern) VALUES ($1, $2, $3, $4) RETURNING *', [betAmount, 'pending', 0, pattern]);
                 const gameId = res.rows[0].id;
                 io.emit('gameStateUpdate', { status: 'pending', gameId, betAmount: betAmount, pot: 0, calledNumbers: [], pattern });
+                
+                // --- FIX: SEND INVITE LINK IMMEDIATELY ---
+                const inviteLink = `https://t.me/${botUsername}?start=bingo`;
+                const inviteMsg = `📢 **Bingo Game #${gameId} Open!**\n\n` +
+                                  `Bet: ${betAmount} Points\n` +
+                                  `Rule: ${pattern.replace('_', ' ').toUpperCase()}\n\n` +
+                                  `👇 **Click here to Join:**\n${inviteLink}`;
+                
                 const dashMsg = `🎮 *Game #${gameId} Pending*\nBet: ${betAmount}\n\n👇 *Wait for players then Start:*`;
                 const kb = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `gm_refresh_${gameId}` }], [{ text: "▶️ START", callback_data: `gm_pre_${gameId}` }], [{ text: "🛑 Abort", callback_data: `gm_abort_${gameId}` }]] };
+                
                 bot.sendMessage(chatId, dashMsg, { parse_mode: "Markdown", reply_markup: kb }).catch(()=>{});
+                
+                // Send the forwarding message
+                setTimeout(() => {
+                    bot.sendMessage(chatId, inviteMsg, { parse_mode: "Markdown" }).catch(()=>{});
+                    bot.sendMessage(chatId, "⬆️ **Forward the message above to your Group/Channel!**", { parse_mode: "Markdown" }).catch(()=>{});
+                }, 500); 
+
                 delete chatStates[chatId]; 
             }
             else if (state.step === 'awaiting_bank_update') {
