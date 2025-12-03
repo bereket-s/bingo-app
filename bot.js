@@ -59,11 +59,12 @@ const startBot = (database, socketIo, startGameLogic) => {
   const adminKeyboard = {
       keyboard: [
           [{ text: "🚀 Play / ይጫወቱ" }, { text: "🆕 New Game / አዲስ ጨዋታ" }],
-          [{ text: "📝 Register / መዝግብ" }, { text: "🗑️ Delete User / አስወግድ" }], // New Delete Button
+          [{ text: "📝 Register / መዝግብ" }, { text: "🗑️ Delete User / አስወግድ" }],
           [{ text: "📝 Bulk Register" }, { text: "📜 Players / ተጫዋቾች" }],
-          [{ text: "🏦 Set Bank / ባንክ አስገባ" }, { text: "📈 Global Stats" }],
+          [{ text: "📈 Global Stats" }, { text: "📊 Daily Stats" }], 
+          [{ text: "🏦 Set Bank / ባንክ አስገባ" }, { text: "📋 Transactions" }],
           [{ text: "➕ Add Points" }, { text: "➖ Remove Points" }],
-          [{ text: "📋 Transactions" }, { text: "🔄 Reset" }]
+          [{ text: "🔄 Reset" }]
       ],
       resize_keyboard: true,
       persistent: true
@@ -83,7 +84,7 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "🚀 Play Bingo / ጨዋታውን ጀምር" }],
           [{ text: "💰 My Points / ነጥቦቼ" }, { text: "🏦 Deposit / ገቢ አድርግ" }],
           [{ text: "💸 Transfer / አስተላልፍ" }, { text: "🏧 Withdraw / ወጪ አድርግ" }],
-          [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "ℹ️ About / ስለ ቦቱ" }], // New User Buttons
+          [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "ℹ️ About / ስለ ቦቱ" }], 
           [{ text: "🌟 Buy Premium / ፕሪሚየም ይግዙ" }, { text: "🆘 Help / እርዳታ" }]
       ],
       resize_keyboard: true,
