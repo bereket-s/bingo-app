@@ -59,12 +59,11 @@ const startBot = (database, socketIo, startGameLogic) => {
   const adminKeyboard = {
       keyboard: [
           [{ text: "🚀 Play / ይጫወቱ" }, { text: "🆕 New Game / አዲስ ጨዋታ" }],
-          [{ text: "📝 Register / መዝግብ" }, { text: "📝 Bulk Register / በጅምላ መዝግብ" }],
-          [{ text: "📜 Players / ተጫዋቾች" }, { text: "📈 Global Stats / አጠቃላይ መረጃ" }],
-          [{ text: "🏦 Set Bank / ባንክ አስገባ" }, { text: "📊 Daily Stats / ዕለታዊ መረጃ" }],
-          [{ text: "➕ Add Points / ነጥብ ጨምር" }, { text: "➖ Remove / ቀንስ" }],
-          [{ text: "➕ Bulk Add Points / በጅምላ ነጥብ" }, { text: "🔄 Reset / ሰርዝ" }],
-          [{ text: "📋 Transactions / ዝውውሮች" }]
+          [{ text: "📝 Register / መዝግብ" }, { text: "🗑️ Delete User / አስወግድ" }], // New Delete Button
+          [{ text: "📝 Bulk Register" }, { text: "📜 Players / ተጫዋቾች" }],
+          [{ text: "🏦 Set Bank / ባንክ አስገባ" }, { text: "📈 Global Stats" }],
+          [{ text: "➕ Add Points" }, { text: "➖ Remove Points" }],
+          [{ text: "📋 Transactions" }, { text: "🔄 Reset" }]
       ],
       resize_keyboard: true,
       persistent: true
@@ -84,6 +83,7 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "🚀 Play Bingo / ጨዋታውን ጀምር" }],
           [{ text: "💰 My Points / ነጥቦቼ" }, { text: "🏦 Deposit / ገቢ አድርግ" }],
           [{ text: "💸 Transfer / አስተላልፍ" }, { text: "🏧 Withdraw / ወጪ አድርግ" }],
+          [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "ℹ️ About / ስለ ቦቱ" }], // New User Buttons
           [{ text: "🌟 Buy Premium / ፕሪሚየም ይግዙ" }, { text: "🆘 Help / እርዳታ" }]
       ],
       resize_keyboard: true,
@@ -368,7 +368,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                  
                  try {
                     await bot.editMessageText(newText, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: kb });
-                    // Send invite link again for convenience on refresh
                     const pattern = gameRes.rows[0].winning_pattern;
                     const inviteLink = `https://t.me/${botUsername}?start=bingo`;
                     const inviteMsg = `📢 **Game #${gameId} Open!**\nBet: ${betAmt}\nRule: ${pattern.replace('_', ' ').toUpperCase()}\n👉 [Join Game](${inviteLink})`;
@@ -511,7 +510,7 @@ const startBot = (database, socketIo, startGameLogic) => {
     if (!text) return;
 
     // --- FIX: CANCEL STATE IF USER HITS A MENU BUTTON ---
-    const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset"];
+    const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ About", "🗑️ Delete User"];
     if (mainMenuButtons.some(btn => text.startsWith(btn))) {
         if (chatStates[chatId]) delete chatStates[chatId];
     }
@@ -567,6 +566,33 @@ const startBot = (database, socketIo, startGameLogic) => {
         if(!user) return;
         chatStates[chatId] = { step: 'awaiting_withdraw_amount', user: user };
         bot.sendMessage(chatId, `🏧 *Withdraw*\nBalance: ${user.points}\nMin Withdrawal: 50\n\nEnter amount:`, { parse_mode: "Markdown", reply_markup: { force_reply: true } }).catch(()=>{});
+        return;
+    }
+
+    // --- NEW: Edit Name (Player) ---
+    if (text.startsWith("✏️ Edit Name")) {
+        if(!user) return;
+        chatStates[chatId] = { step: 'awaiting_new_username' };
+        bot.sendMessage(chatId, "✏️ **Change Username**\n\nEnter your new username:", { parse_mode: "Markdown", reply_markup: { force_reply: true } });
+        return;
+    }
+
+    // --- NEW: About / Description ---
+    if (text.startsWith("ℹ️ About") || text.startsWith("🆘 Help")) {
+        const aboutMsg = `ℹ️ **About BingoBot**\n\n` +
+                         `Welcome to the ultimate Bingo game!\n\n` +
+                         `🎮 **How to Play:**\n` +
+                         `1. Wait for Admin to start a game.\n` +
+                         `2. Buy cards using your Points.\n` +
+                         `3. Numbers will be called automatically.\n` +
+                         `4. If you complete the pattern, press **BINGO!**\n\n` +
+                         `💰 **Points:**\n` +
+                         `- Deposit money to get points.\n` +
+                         `- Win games to earn more points.\n` +
+                         `- Withdraw points back to money.\n\n` +
+                         `🇪🇹 **Amharic / አማርኛ:**\n` +
+                         `ይህ የቢንጎ ጨዋታ ነው። አድሚኑ ጨዋታ ሲጀምር ካርድ ይግዙ። ቁጥሮች ሲጠሩ ይምረጡ። አሸናፊ ሲሆኑ **BINGO** ይበሉ!`;
+        bot.sendMessage(chatId, aboutMsg, { parse_mode: "Markdown" });
         return;
     }
 
@@ -711,6 +737,12 @@ const startBot = (database, socketIo, startGameLogic) => {
                 bot.sendMessage(chatId, msg, { parse_mode: "Markdown" }).catch(e => console.error("Tx Send Error:", e));
             } catch(e) { console.error("Tx Query Error:", e); }
             return;
+        }
+
+        // --- NEW: Delete User (Admin) ---
+        if (text.startsWith("🗑️ Delete User")) {
+            chatStates[chatId] = { step: 'awaiting_delete_username' };
+            return bot.sendMessage(chatId, "🗑️ **Delete User**\n\nEnter the username to delete (This will remove all their data!):", { parse_mode: "Markdown" });
         }
     }
 
@@ -933,6 +965,42 @@ const startBot = (database, socketIo, startGameLogic) => {
                       if(user.telegram_id) bot.sendMessage(user.telegram_id, "ℹ️ You have been removed from Admin role.", { reply_markup: userKeyboard });
                  }
                  delete chatStates[chatId];
+            }
+            
+            // --- NEW: Handle Edit Name Input ---
+            else if (state.step === 'awaiting_new_username') {
+                const newName = text.trim();
+                if (newName.length < 3) return bot.sendMessage(chatId, "❌ Username too short.");
+                
+                // Check if taken
+                const check = await db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1)", [newName]);
+                if (check.rows.length > 0) return bot.sendMessage(chatId, "❌ Username already taken.");
+
+                await db.query("UPDATE users SET username = $1 WHERE id = $2", [newName, user.id]);
+                delete chatStates[chatId];
+                bot.sendMessage(chatId, `✅ Username changed to **${newName}**!`, { parse_mode: "Markdown", reply_markup: userKeyboard });
+            }
+
+            // --- NEW: Handle Delete User Input ---
+            else if (state.step === 'awaiting_delete_username') {
+                const targetUser = text.trim();
+                const uRes = await db.query("SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)", [targetUser]);
+                
+                if (uRes.rows.length === 0) {
+                    bot.sendMessage(chatId, "❌ User not found.");
+                } else {
+                    const uid = uRes.rows[0].id;
+                    // Delete dependencies first (cascade manually just in case)
+                    await db.query("DELETE FROM player_cards WHERE user_id = $1", [uid]);
+                    await db.query("DELETE FROM deposits WHERE user_id = $1", [uid]);
+                    await db.query("DELETE FROM transactions WHERE user_id = $1 OR related_user_id = $1", [uid]);
+                    await db.query("UPDATE games SET winner_id = NULL WHERE winner_id = $1", [uid]);
+                    
+                    // Finally delete user
+                    await db.query("DELETE FROM users WHERE id = $1", [uid]);
+                    bot.sendMessage(chatId, `🗑️ **${uRes.rows[0].username}** has been permanently deleted.`, { parse_mode: "Markdown" });
+                }
+                delete chatStates[chatId];
             }
 
         } catch (err) { console.error(err); delete chatStates[chatId]; bot.sendMessage(chatId, "❌ Error.").catch(()=>{}); }
