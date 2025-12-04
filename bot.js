@@ -691,6 +691,36 @@ const startBot = (database, socketIo, startGameLogic) => {
             chatStates[chatId] = { step: 'awaiting_delete_username' };
             return bot.sendMessage(chatId, "🗑️ **Delete User**\n\nEnter the username to delete (This will remove all their data!):", { parse_mode: "Markdown" });
         }
+        // FIXED: PLAYERS LIST WITHOUT MARKDOWN TO PREVENT ERRORS
+        if (text.startsWith("📜 Players")) {
+             try {
+                 const res = await db.query("SELECT username, points, phone_number FROM users ORDER BY created_at DESC LIMIT 200"); 
+                 
+                 let msg = "📜 All Players List\n\n";
+                 if(res.rows.length === 0) msg += "No players found.";
+
+                 const chunks = [];
+                 let currentChunk = msg;
+
+                 res.rows.forEach((u, i) => {
+                     // NO ESCAPING HERE - Sending plain text
+                     const line = `${i+1}. ${u.username} (${u.phone_number || 'No Phone'}): ${u.points}\n`;
+                     if ((currentChunk + line).length > 4000) {
+                         chunks.push(currentChunk);
+                         currentChunk = line;
+                     } else {
+                         currentChunk += line;
+                     }
+                 });
+                 chunks.push(currentChunk);
+
+                 for (const chunk of chunks) {
+                     // NO PARSE_MODE - Safe sending
+                     await bot.sendMessage(chatId, chunk).catch((e)=>{ console.error("Player List Send Error:", e); });
+                 }
+             } catch(e) { console.error(e); }
+             return;
+        }
         if (text.startsWith("📋 Transactions")) {
             try {
                 const res = await db.query(`
@@ -776,9 +806,9 @@ const startBot = (database, socketIo, startGameLogic) => {
                 } else {
                      if (await isAdmin(tgId) || await isSuperAdmin(tgId)) {
                          const kb = (await isSuperAdmin(tgId)) ? superAdminKeyboard : adminKeyboard;
-                         bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nRegistered as: ${result.user.username}`, { reply_markup: kb, parse_mode: "Markdown" });
+                         bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nRegistered as: ${result.user.username}`, { reply_markup: kb, parse_mode: "Markdown" }).catch(()=>{});
                      } else {
-                         bot.sendMessage(chatId, `✅ **Registered!**\nWelcome, ${result.user.username}!`, { reply_markup: userKeyboard, parse_mode: "Markdown" });
+                         bot.sendMessage(chatId, `✅ **Registered!**\nWelcome, ${result.user.username}!`, { reply_markup: userKeyboard, parse_mode: "Markdown" }).catch(()=>{});
                      }
                      triggerStart(chatId, result.user);
                 }
