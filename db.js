@@ -7,14 +7,12 @@ const connectionConfig = {
   ssl: isProduction ? { rejectUnauthorized: false } : false
 };
 
-// Fallback for local development if DATABASE_URL is not set
 if (!process.env.DATABASE_URL) {
-  connectionConfig.user = process.env.DB_USER ;
-  connectionConfig.host = process.env.DB_HOST ;
-  connectionConfig.database = process.env.DB_NAME ;
-  connectionConfig.password = process.env.DB_PASSWORD ;
-  connectionConfig.port = parseInt(process.env.DB_PORT , 10);
-  // Remove connectionString if using individual params
+  connectionConfig.user = process.env.DB_USER || 'postgres';
+  connectionConfig.host = process.env.DB_HOST || 'localhost';
+  connectionConfig.database = process.env.DB_NAME || 'bingo_db';
+  connectionConfig.password = process.env.DB_PASSWORD || '199129';
+  connectionConfig.port = parseInt(process.env.DB_PORT || '5432', 10);
   delete connectionConfig.connectionString;
 }
 
@@ -25,13 +23,13 @@ async function initializeDatabase() {
     try {
         await client.query('BEGIN');
 
-        // 1. Create Users Table with ROLE
+        // 1. Users
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 telegram_id BIGINT UNIQUE,
                 username VARCHAR(255) NOT NULL,
-                points INTEGER DEFAULT 0, 
+                points INTEGER DEFAULT 100, 
                 role VARCHAR(20) DEFAULT 'player', 
                 session_token VARCHAR(255) UNIQUE,
                 phone_number VARCHAR(50),
@@ -43,45 +41,7 @@ async function initializeDatabase() {
             );
         `);
 
-        // --- MIGRATION CHECKS ---
-        await client.query(`
-            DO $$ BEGIN
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'pref_auto_daub') THEN
-                    ALTER TABLE users ADD COLUMN pref_auto_daub BOOLEAN DEFAULT TRUE;
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'pref_auto_bingo') THEN
-                    ALTER TABLE users ADD COLUMN pref_auto_bingo BOOLEAN DEFAULT TRUE;
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'created_at') THEN
-                    ALTER TABLE users ADD COLUMN created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'role') THEN
-                    ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'player';
-                END IF;
-            END $$;
-        `);
-
-        // 2. SELF-HEALING (Duplicates cleanup)
-        await client.query(`
-            DELETE FROM users a USING users b WHERE a.id < b.id AND a.username = b.username;
-            DELETE FROM users a USING users b WHERE a.id < b.id AND LOWER(a.username) = LOWER(b.username);
-            DELETE FROM users a USING users b WHERE a.id < b.id AND a.phone_number = b.phone_number;
-        `);
-
-        // 3. Constraints
-        await client.query(`
-            DO $$ BEGIN
-                IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'users_username_key') THEN
-                    ALTER TABLE users ADD CONSTRAINT users_username_key UNIQUE (username);
-                END IF;
-                IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'users_phone_number_key') THEN
-                    ALTER TABLE users ADD CONSTRAINT users_phone_number_key UNIQUE (phone_number);
-                END IF;
-            END $$;
-        `);
-        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (LOWER(username));`);
-
-        // 4. Games Table
+        // 2. Games
         await client.query(`
             CREATE TABLE IF NOT EXISTS games (
                 id SERIAL PRIMARY KEY,
@@ -93,16 +53,8 @@ async function initializeDatabase() {
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         `);
-        
-        await client.query(`
-            DO $$ BEGIN
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'games' AND column_name = 'winning_pattern') THEN
-                    ALTER TABLE games ADD COLUMN winning_pattern VARCHAR(50) DEFAULT 'any_line';
-                END IF;
-            END $$;
-        `);
 
-        // 5. Player Cards
+        // 3. Player Cards
         await client.query(`
             CREATE TABLE IF NOT EXISTS player_cards (
                 id SERIAL PRIMARY KEY,
@@ -115,7 +67,7 @@ async function initializeDatabase() {
             );
         `);
 
-        // 6. Deposits
+        // 4. Manual Deposits
         await client.query(`
             CREATE TABLE IF NOT EXISTS deposits (
                 id SERIAL PRIMARY KEY,
@@ -130,7 +82,21 @@ async function initializeDatabase() {
             );
         `);
 
-        // 7. Transactions Table
+        // 5. Automated Bank Transactions (NEW)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS bank_transactions (
+                id SERIAL PRIMARY KEY,
+                txn_code VARCHAR(100) UNIQUE, 
+                amount INTEGER NOT NULL,
+                sender_name VARCHAR(255),
+                raw_sms TEXT,
+                status VARCHAR(20) DEFAULT 'unclaimed',
+                claimed_by INTEGER REFERENCES users(id),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // 6. Transactions Log
         await client.query(`
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
@@ -144,7 +110,7 @@ async function initializeDatabase() {
             );
         `);
 
-        // 8. System Settings
+        // 7. Settings
         await client.query(`
             CREATE TABLE IF NOT EXISTS system_settings (
                 key VARCHAR(50) PRIMARY KEY,
@@ -152,13 +118,27 @@ async function initializeDatabase() {
             );
         `);
 
+        // Migrations
+        await client.query(`
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'pref_auto_daub') THEN
+                    ALTER TABLE users ADD COLUMN pref_auto_daub BOOLEAN DEFAULT TRUE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'pref_auto_bingo') THEN
+                    ALTER TABLE users ADD COLUMN pref_auto_bingo BOOLEAN DEFAULT TRUE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'games' AND column_name = 'winning_pattern') THEN
+                    ALTER TABLE games ADD COLUMN winning_pattern VARCHAR(50) DEFAULT 'any_line';
+                END IF;
+            END $$;
+        `);
+
         await client.query('COMMIT');
-        console.log('✅ Database initialized and verified.');
+        console.log('✅ Database initialized.');
 
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error('❌ Database initialization error:', err.stack);
-        // Don't exit process in dev, might just be connection blip
+        console.error('❌ Database error:', err.stack);
         if (isProduction) process.exit(1);
     } finally {
         client.release();
