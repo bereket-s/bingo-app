@@ -4,7 +4,7 @@ const http = require('http');
 const https = require('https'); 
 const { Server } = require('socket.io');
 const path = require('path'); 
-const bodyParser = require('body-parser'); // Needed for SMS
+const bodyParser = require('body-parser'); 
 
 const db = require('./db'); 
 const { startBot } = require('./bot'); 
@@ -26,7 +26,6 @@ app.use(bodyParser.json());
 app.use(express.static(buildPath));
 
 // --- SMS AUTOMATION WEBHOOK ---
-// Configure "SMS Forwarder" app to POST to: https://YOUR-APP.onrender.com/api/sms-webhook
 app.post('/api/sms-webhook', async (req, res) => {
     const { from, message } = req.body;
 
@@ -36,12 +35,10 @@ app.post('/api/sms-webhook', async (req, res) => {
     let amount = 0;
 
     // 1. Find Transaction ID (Telebirr/CBE format)
-    // Looks for "Trans ID: 123ABC45" or "Ref: 123ABC45"
     const txnMatch = message.match(/(Trans ID|Txn ID|Ref|TI|TID)[:\s]*([A-Z0-9]{6,15})/i);
     if (txnMatch) txnId = txnMatch[2];
 
     // 2. Find Amount
-    // Looks for "100 ETB" or "50.00 Birr"
     const amountMatch = message.match(/([0-9,]+(\.[0-9]{1,2})?)\s*(ETB|Birr)/i);
     if (amountMatch) {
         amount = parseFloat(amountMatch[1].replace(/,/g, ''));
@@ -81,11 +78,24 @@ startBot(db, io, startGameLogic);
 server.listen(PORT, () => {
   console.log(`✅ Server listening on http://localhost:${PORT}`);
 
-  // Keep-Alive for Render
+  // --- AGGRESSIVE KEEP-ALIVE ---
+  // Ping every 5 minutes (300000 ms) to prevent 15-min sleep
   const publicUrl = process.env.PUBLIC_URL;
   if (publicUrl && publicUrl.startsWith('http')) {
-      setInterval(() => {
-          https.get(publicUrl, (res) => {}).on('error', (e) => {});
-      }, 10 * 60 * 1000); 
+      console.log(`⏰ Keep-Alive: Monitoring ${publicUrl}`);
+      
+      const pingServer = () => {
+          https.get(publicUrl, (res) => {
+              console.log(`⏰ Keep-Alive Ping: Status ${res.statusCode}`);
+          }).on('error', (e) => {
+              console.error(`❌ Keep-Alive Error: ${e.message}`);
+          });
+      };
+
+      // Ping immediately on start
+      pingServer();
+      
+      // Then repeat every 5 minutes
+      setInterval(pingServer, 5 * 60 * 1000); 
   }
 });

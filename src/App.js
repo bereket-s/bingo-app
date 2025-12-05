@@ -47,7 +47,10 @@ const TRANSLATIONS = {
     p_l_shape: "L Shape", p_corners: "4 Corners", p_letter_h: "Letter H",
     p_letter_t: "Letter T", p_frame: "Frame", p_full_house: "Full House", 
     p_plus_sign: "Plus Sign", p_u_shape: "U Shape",
-    p_any_line_icon: "↔️↕️ Any Line"
+    p_any_line_icon: "↔️↕️ Any Line",
+    buyPoints: "🛒 Buy Points",
+    payStripe: "💳 Card (Stripe)",
+    payBinance: "🔶 Crypto (Binance)"
   },
   am: {
     waiting: "አስተናጋጁ እስኪጀምር...",
@@ -89,14 +92,16 @@ const TRANSLATIONS = {
     p_l_shape: "L ቅርጽ", p_corners: "4ቱ ማዕዘን", p_letter_h: "H ቅርጽ",
     p_letter_t: "T ቅርጽ", p_frame: "ዙሪያውን/ሣጥን", p_full_house: "ፉል ሀውስ (ሙሉ)", 
     p_plus_sign: "Plus +", p_u_shape: "U Shape (Pyramid)",
-    p_any_line_icon: "↔️↕️ ማንኛውም"
+    p_any_line_icon: "↔️↕️ ማንኛውም",
+    buyPoints: "🛒 ነጥብ ይግዙ",
+    payStripe: "💳 ካርድ (Stripe)",
+    payBinance: "🔶 ክሪፕቶ (Binance)"
   }
 };
 
 const getT = (lang) => (key) => TRANSLATIONS[lang][key] || TRANSLATIONS['en'][key] || key;
 
 const PatternDisplay = ({ pattern, t }) => {
-    // ... (Same grid logic as before) ...
     const getGrid = (p) => {
         const g = Array(5).fill(null).map(() => Array(5).fill(false));
         const fill = (r,c) => { if(r>=0&&r<5&&c>=0&&c<5) g[r][c] = true; };
@@ -137,7 +142,7 @@ const PatternDisplay = ({ pattern, t }) => {
 
 function App() {
   const [lang, setLang] = useState(localStorage.getItem('bingo_lang') || 'en'); 
-  const langRef = useRef(lang); // FIX: Ref to track language in sockets
+  const langRef = useRef(lang); 
 
   const [auth, setAuth] = useState(null);
   const [player, setPlayer] = useState({ username: "Loading...", points: 0, isPremium: false });
@@ -145,6 +150,7 @@ function App() {
 
   const [gameState, setGameState] = useState({ status: "idle", gameId: null, betAmount: 0, calledNumbers: [], winner: null, pot: 0, pattern: "any_line" });
   const [showSettings, setShowSettings] = useState(false);
+  const [showPayment, setShowPayment] = useState(false); 
   const [cardOptions, setCardOptions] = useState([]);
   const [cardStates, setCardStates] = useState({}); 
   const [selectedOption, setSelectedOption] = useState(null);
@@ -156,7 +162,7 @@ function App() {
   const [countdown, setCountdown] = useState(0); 
   const [isConfirming, setIsConfirming] = useState(false); 
   
-  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [audioEnabled, setAudioEnabled] = useState(false); // Default false to prompt user
   const audioEnabledRef = useRef(false); 
   const audioRef = useRef(new Audio());
   const audioQueue = useRef([]);
@@ -166,7 +172,28 @@ function App() {
 
   // Sync refs
   useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
-  useEffect(() => { langRef.current = lang; }, [lang]); // Sync lang ref
+  useEffect(() => { langRef.current = lang; }, [lang]); 
+
+  // --- NEW: UNLOCK AUDIO ON FIRST INTERACTION ---
+  useEffect(() => {
+      const unlockAudio = () => {
+          if (!audioEnabledRef.current) {
+              // Try to play silent sound to unlock browser auto-play policy
+              const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+              silent.play().then(() => {
+                  setAudioEnabled(true); // Auto-enable visual indicator
+                  console.log("Audio Unlocked!");
+              }).catch((e) => console.log("Audio unlock failed yet", e));
+          }
+      };
+      
+      window.addEventListener('click', unlockAudio);
+      window.addEventListener('touchstart', unlockAudio);
+      return () => {
+          window.removeEventListener('click', unlockAudio);
+          window.removeEventListener('touchstart', unlockAudio);
+      };
+  }, []);
 
   useEffect(() => {
     if (!document.getElementById('confetti-script')) {
@@ -188,7 +215,6 @@ function App() {
       isPlaying.current = true;
       
       const filename = audioQueue.current.shift();
-      // FIX: Use ref to get CURRENT language
       audioRef.current.src = `/audio/${langRef.current}/${filename}.mp3`;
       
       try {
@@ -200,12 +226,14 @@ function App() {
       } catch (e) {
           console.error("Audio play error", e);
           isPlaying.current = false;
-          processAudioQueue();
+          processAudioQueue(); // Skip and continue
       }
   };
 
   const queueAudio = (filenames) => {
-      if (!audioEnabledRef.current) return;
+      // Force enabled if user clicked recently (handled by unlockAudio effect)
+      if (!audioEnabledRef.current) return; 
+      
       if (Array.isArray(filenames)) {
           audioQueue.current.push(...filenames);
       } else {
@@ -214,7 +242,7 @@ function App() {
       processAudioQueue();
   };
 
-  // --- LOCAL STORAGE ---
+  // ... (Local Storage logic same as before) ...
   useEffect(() => {
       if(gameState.gameId) {
           const savedMarks = localStorage.getItem(`bingo_marks_${gameState.gameId}`);
@@ -235,10 +263,11 @@ function App() {
       }
   }, [markedCells, gameState.gameId]);
 
-  // --- EVENT HANDLERS ---
+  // ... (Game Loop logic same as before) ...
   useEffect(() => { 
       if (gameState.calledNumbers.length > 0) {
           const lastNum = gameState.calledNumbers[gameState.calledNumbers.length - 1];
+          // Always try to queue audio when a new number comes
           queueAudio(`call_${lastNum}`);
           
           if (player.isPremium && prefs.autoDaub && gameState.status === 'active') {
@@ -285,12 +314,14 @@ function App() {
   };
   
   const toggleSettings = () => setShowSettings(!showSettings);
+  const togglePayment = () => setShowPayment(!showPayment);
   const togglePref = (key) => {
       const newVal = !prefs[key];
       setPrefs(prev => ({...prev, [key]: newVal}));
       if(player.isPremium) socket.emit('updatePreferences', { ...prefs, [key]: newVal });
   };
 
+  // ... (Socket Init same as before) ...
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const userId = urlParams.get('user_id');
@@ -299,12 +330,10 @@ function App() {
     else if (window.location.search.includes('user_id')) { setErrorMsg(t('invalid')); }
   }, []); 
 
-  useEffect(() => {
-      if (!auth || gameState.status !== 'pending') return;
-      if (selectedOption) socket.emit('viewCard', { gameId: gameState.gameId, cardId: selectedOption.id, isViewing: true });
-      return () => { if (selectedOption) socket.emit('viewCard', { gameId: gameState.gameId, cardId: selectedOption.id, isViewing: false }); };
-  }, [selectedOption, auth, gameState.gameId, gameState.status]);
+  // ... (View Card logic same) ...
+  useEffect(() => { if (!auth || gameState.status !== 'pending') return; if (selectedOption) socket.emit('viewCard', { gameId: gameState.gameId, cardId: selectedOption.id, isViewing: true }); return () => { if (selectedOption) socket.emit('viewCard', { gameId: gameState.gameId, cardId: selectedOption.id, isViewing: false }); }; }, [selectedOption, auth, gameState.gameId, gameState.status]);
 
+  // ... (Socket Handlers same) ...
   useEffect(() => {
     const handleReconnection = () => { if (auth) socket.emit("syncGameState", auth); };
 
@@ -420,6 +449,21 @@ function App() {
   };
   const claimBingo = (cardId) => { if (!cardId || gameState.status !== 'active' || !auth) return; setCheckingCardId(cardId); socket.emit("claimBingo", { ...auth, gameId: gameState.gameId, cardId, markedCells: Array.from(markedCells[cardId] || new Set()) }); };
 
+  // --- NEW: PAYMENT HANDLERS ---
+  const handlePayment = async (provider, packageId) => {
+      try {
+          const endpoint = provider === 'stripe' ? '/api/create-stripe-session' : '/api/create-binance-order';
+          const res = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId: auth.userId, packageId })
+          });
+          const data = await res.json();
+          if (data.url) window.location.href = data.url;
+          else alert("Error creating payment: " + (data.error || "Unknown"));
+      } catch (e) { alert("Network Error"); }
+  };
+
   if (!auth) return <div className="App login-screen"><h2>{t('invalid')}</h2></div>;
   const estPrize = Math.floor(gameState.pot * 0.7);
 
@@ -434,12 +478,33 @@ function App() {
               {player.isPremium && <span className="premium-badge">PREMIUM</span>}
           </div>
           <div className="header-controls">
+            <button className="lang-btn" onClick={togglePayment}>{t('buyPoints')}</button>
             <button className="lang-btn" onClick={toggleSettings}>{t('settings')}</button>
             <button className="lang-btn" onClick={toggleLanguage}>{t('langBtn')}</button>
             <button className={`audio-btn ${audioEnabled?'on':'off'}`} onClick={toggleAudio}>{audioEnabled?t('voiceOn'):t('voiceOff')}</button>
           </div>
       </header>
       
+      {showPayment && (
+          <div className="modal-overlay" onClick={togglePayment}>
+              <div className="modal-content" onClick={e => e.stopPropagation()}>
+                  <h3>{t('buyPoints')}</h3>
+                  <div className="payment-opt">
+                      <h4>100 Points ($1.00)</h4>
+                      <button className="pay-btn stripe" onClick={()=>handlePayment('stripe', '100pts')}>{t('payStripe')}</button>
+                      <button className="pay-btn binance" onClick={()=>handlePayment('binance', '100pts')}>{t('payBinance')}</button>
+                  </div>
+                  <hr/>
+                  <div className="payment-opt">
+                      <h4>500 Points ($5.00)</h4>
+                      <button className="pay-btn stripe" onClick={()=>handlePayment('stripe', '500pts')}>{t('payStripe')}</button>
+                      <button className="pay-btn binance" onClick={()=>handlePayment('binance', '500pts')}>{t('payBinance')}</button>
+                  </div>
+                  <button className="cancel-btn" onClick={togglePayment}>{t('back')}</button>
+              </div>
+          </div>
+      )}
+
       {showSettings && (
           <div className="modal-overlay" onClick={toggleSettings}>
               <div className="modal-content" onClick={e => e.stopPropagation()}>
@@ -483,7 +548,7 @@ function App() {
               <div className="joining">
                   <div className="timer-display">{t('hostMsg')}</div>
                   <div className="bet-display">{t('bet')}: {gameState.betAmount}</div>
-                  
+                  {/* ... (Joining UI same as before) ... */}
                   {myCards.length > 0 && (
                       <div className="my-selected-cards">
                           <h3>{t('myCards')} ({myCards.length}/{MAX_CARDS})</h3>
@@ -534,7 +599,7 @@ function App() {
                                           <button 
                                             className="confirm-btn" 
                                             onClick={confirmCard}
-                                            disabled={isConfirming} // LOCK BUTTON
+                                            disabled={isConfirming} 
                                           >
                                               {isConfirming ? "..." : t('confirm')}
                                           </button>
