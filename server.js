@@ -27,21 +27,35 @@ app.use(express.static(buildPath));
 
 // --- SMS AUTOMATION WEBHOOK ---
 app.post('/api/sms-webhook', async (req, res) => {
-    const { from, message } = req.body;
+    // 1. Sanitize Input
+    const from = req.body.from || "Unknown";
+    const message = req.body.message || "";
 
     console.log(`📩 SMS from ${from}: ${message}`);
 
     let txnId = null;
     let amount = 0;
 
-    // 1. Find Transaction ID (Telebirr/CBE format)
+    // --- LOGIC A: Bank/Telebirr Format ---
+    // Matches: "Trans ID: 8H7G6F", "Txn: 12345", "Ref: ABC"
     const txnMatch = message.match(/(Trans ID|Txn ID|Ref|TI|TID)[:\s]*([A-Z0-9]{6,15})/i);
     if (txnMatch) txnId = txnMatch[2];
 
-    // 2. Find Amount
+    // Matches: "100 ETB", "50.00 Birr"
     const amountMatch = message.match(/([0-9,]+(\.[0-9]{1,2})?)\s*(ETB|Birr)/i);
     if (amountMatch) {
         amount = parseFloat(amountMatch[1].replace(/,/g, ''));
+    }
+
+    // --- LOGIC B: Admin Testing Format ---
+    // Allow you to send "TEST 100" from your phone to test the connection
+    if (!txnId && message.toUpperCase().startsWith("TEST")) {
+        const testParts = message.split(" ");
+        if (testParts.length >= 2) {
+            txnId = "TEST-" + Date.now().toString().slice(-6); // Generate random fake ID
+            amount = parseFloat(testParts[1]);
+            console.log("🛠️ Debug SMS detected. Generated ID:", txnId);
+        }
     }
 
     if (txnId && amount > 0) {
@@ -59,7 +73,8 @@ app.post('/api/sms-webhook', async (req, res) => {
             res.status(500).send('Error');
         }
     } else {
-        console.log("⚠️ SMS Ignored (No Txn ID or Amount)");
+        console.log("⚠️ SMS Ignored (Format mismatch or App config error)");
+        console.log("👉 Tip: Message must contain 'Trans ID: XXX' and '100 ETB', OR start with 'TEST 100'");
         res.status(200).send('Ignored');
     }
 });
@@ -79,11 +94,9 @@ server.listen(PORT, () => {
   console.log(`✅ Server listening on http://localhost:${PORT}`);
 
   // --- AGGRESSIVE KEEP-ALIVE ---
-  // Ping every 5 minutes (300000 ms) to prevent 15-min sleep
   const publicUrl = process.env.PUBLIC_URL;
   if (publicUrl && publicUrl.startsWith('http')) {
       console.log(`⏰ Keep-Alive: Monitoring ${publicUrl}`);
-      
       const pingServer = () => {
           https.get(publicUrl, (res) => {
               console.log(`⏰ Keep-Alive Ping: Status ${res.statusCode}`);
@@ -91,11 +104,7 @@ server.listen(PORT, () => {
               console.error(`❌ Keep-Alive Error: ${e.message}`);
           });
       };
-
-      // Ping immediately on start
       pingServer();
-      
-      // Then repeat every 5 minutes
       setInterval(pingServer, 5 * 60 * 1000); 
   }
 });
