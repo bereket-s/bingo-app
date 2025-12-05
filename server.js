@@ -36,23 +36,33 @@ app.post('/api/sms-webhook', async (req, res) => {
     let txnId = null;
     let amount = 0;
 
-    // --- LOGIC A: Bank/Telebirr Format ---
-    // Matches: "Trans ID: 8H7G6F", "Txn: 12345", "Ref: ABC"
-    const txnMatch = message.match(/(Trans ID|Txn ID|Ref|TI|TID)[:\s]*([A-Z0-9]{6,15})/i);
-    if (txnMatch) txnId = txnMatch[2];
+    // --- PARSING LOGIC FOR SPECIFIC BANKS ---
 
-    // Matches: "100 ETB", "50.00 Birr"
-    const amountMatch = message.match(/([0-9,]+(\.[0-9]{1,2})?)\s*(ETB|Birr)/i);
-    if (amountMatch) {
-        amount = parseFloat(amountMatch[1].replace(/,/g, ''));
+    // 1. Telebirr
+    // Format: "You have received ETB 10.00 from Yared Shewareg... Your transaction number is CL53O7W8MZ."
+    if (message.includes('telebirr') || from.toLowerCase().includes('telebirr') || message.includes('Ethio telecom')) {
+        const telebirrTxn = message.match(/transaction number is\s*([A-Z0-9]+)/i);
+        const telebirrAmount = message.match(/received\s*(ETB|Birr)\s*([0-9,]+(\.[0-9]{2})?)/i);
+        
+        if (telebirrTxn) txnId = telebirrTxn[1];
+        if (telebirrAmount) amount = parseFloat(telebirrAmount[2].replace(/,/g, ''));
     }
 
-    // --- LOGIC B: Admin Testing Format ---
-    // Allow you to send "TEST 100" from your phone to test the connection
+    // 2. CBE (Commercial Bank of Ethiopia)
+    // Format: "Dear Bereket your Account ... Credited with ETB 70,400.00 ... Ref No FT25338SCNRF"
+    if (!txnId && (message.includes('CBE') || from.toLowerCase().includes('cbe') || message.includes('Commercial Bank'))) {
+        const cbeTxn = message.match(/Ref No\s*([A-Z0-9]+)/i);
+        const cbeAmount = message.match(/Credited with\s*(ETB|Birr)\s*([0-9,]+(\.[0-9]{2})?)/i);
+
+        if (cbeTxn) txnId = cbeTxn[1];
+        if (cbeAmount) amount = parseFloat(cbeAmount[2].replace(/,/g, ''));
+    }
+
+    // 3. Fallback / Test Logic (Keep for admin testing)
     if (!txnId && message.toUpperCase().startsWith("TEST")) {
         const testParts = message.split(" ");
         if (testParts.length >= 2) {
-            txnId = "TEST-" + Date.now().toString().slice(-6); // Generate random fake ID
+            txnId = "TEST-" + Date.now().toString().slice(-6); 
             amount = parseFloat(testParts[1]);
             console.log("🛠️ Debug SMS detected. Generated ID:", txnId);
         }
@@ -73,8 +83,7 @@ app.post('/api/sms-webhook', async (req, res) => {
             res.status(500).send('Error');
         }
     } else {
-        console.log("⚠️ SMS Ignored (Format mismatch or App config error)");
-        console.log("👉 Tip: Message must contain 'Trans ID: XXX' and '100 ETB', OR start with 'TEST 100'");
+        console.log("⚠️ SMS Ignored (Format mismatch)");
         res.status(200).send('Ignored');
     }
 });
