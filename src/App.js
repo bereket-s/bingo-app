@@ -47,7 +47,10 @@ const TRANSLATIONS = {
     p_l_shape: "L Shape", p_corners: "4 Corners", p_letter_h: "Letter H",
     p_letter_t: "Letter T", p_frame: "Frame", p_full_house: "Full House", 
     p_plus_sign: "Plus Sign", p_u_shape: "U Shape",
-    p_any_line_icon: "↔️↕️ Any Line"
+    p_any_line_icon: "↔️↕️ Any Line",
+    buyPoints: "🛒 Buy Points",
+    payStripe: "💳 Card (Stripe)",
+    payBinance: "🔶 Crypto (Binance)"
   },
   am: {
     waiting: "አስተናጋጁ እስኪጀምር...",
@@ -89,7 +92,10 @@ const TRANSLATIONS = {
     p_l_shape: "L ቅርጽ", p_corners: "4ቱ ማዕዘን", p_letter_h: "H ቅርጽ",
     p_letter_t: "T ቅርጽ", p_frame: "ዙሪያውን/ሣጥን", p_full_house: "ፉል ሀውስ (ሙሉ)", 
     p_plus_sign: "Plus +", p_u_shape: "U Shape (Pyramid)",
-    p_any_line_icon: "↔️↕️ ማንኛውም"
+    p_any_line_icon: "↔️↕️ ማንኛውም",
+    buyPoints: "🛒 ነጥብ ይግዙ",
+    payStripe: "💳 ካርድ (Stripe)",
+    payBinance: "🔶 ክሪፕቶ (Binance)"
   }
 };
 
@@ -168,16 +174,27 @@ function App() {
   useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
   useEffect(() => { langRef.current = lang; }, [lang]); 
 
-  // --- UNLOCK AUDIO ON INTERACTION ---
+  // --- UNLOCK AUDIO ON FIRST INTERACTION (FIXED) ---
+  // This version only runs once to "warm up" the audio, but NEVER forces the state to true
   useEffect(() => {
       const unlockAudio = () => {
-          if (!audioEnabledRef.current) {
-              const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
-              silent.play().then(() => { setAudioEnabled(true); console.log("Audio Unlocked!"); }).catch((e) => console.log("Audio unlock failed yet", e));
-          }
+          // Just play a silent sound to satisfy the browser. 
+          // Do NOT call setAudioEnabled(true) here.
+          const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+          silent.play().catch(() => {});
+          
+          // Remove listeners immediately so we don't do this again
+          window.removeEventListener('click', unlockAudio);
+          window.removeEventListener('touchstart', unlockAudio);
       };
-      window.addEventListener('click', unlockAudio); window.addEventListener('touchstart', unlockAudio);
-      return () => { window.removeEventListener('click', unlockAudio); window.removeEventListener('touchstart', unlockAudio); };
+      
+      window.addEventListener('click', unlockAudio);
+      window.addEventListener('touchstart', unlockAudio);
+      
+      return () => {
+          window.removeEventListener('click', unlockAudio);
+          window.removeEventListener('touchstart', unlockAudio);
+      };
   }, []);
 
   useEffect(() => {
@@ -216,8 +233,7 @@ function App() {
   };
 
   const queueAudio = (filenames) => {
-      // Force enabled if user clicked recently (handled by unlockAudio effect)
-      if (!audioEnabledRef.current) return; 
+      if (!audioEnabledRef.current) return; // Respect the user's choice!
       
       if (Array.isArray(filenames)) {
           audioQueue.current.push(...filenames);
@@ -284,6 +300,7 @@ function App() {
       const newState = !audioEnabled;
       setAudioEnabled(newState);
       if (newState) {
+          // Explicitly play sound when user turns it ON to verify it works
           const audio = new Audio(`/audio/${lang}/voice_on.mp3`);
           audio.play().catch(e => console.log("Voice conf failed", e));
       }
@@ -478,7 +495,6 @@ function App() {
           {gameState.status === 'idle' && (
             <div className="idle-screen"><h2>{t('waiting')}</h2><div className="pulse-dot"></div><p className="hint">{!audioEnabled?t('hintOff'):t('hintOn')}</p></div>
           )}
-          {/* UPDATED: Show displayId instead of raw gameId */}
           {gameState.status === 'finished' && <div className="winner">🎉 {t('winner')}: {gameState.winner} {t('won')} {gameState.pot} ! 🎉</div>}
           
           {(gameState.status === 'pending' || gameState.status === 'active') && (
@@ -547,7 +563,7 @@ function App() {
                                           <button 
                                             className="confirm-btn" 
                                             onClick={confirmCard}
-                                            disabled={isConfirming} // LOCK BUTTON
+                                            disabled={isConfirming} 
                                           >
                                               {isConfirming ? "..." : t('confirm')}
                                           </button>
