@@ -51,10 +51,8 @@ const CALL_DELAY_MS = 6000;
 
 async function cleanupStaleGames() {
     try {
-        console.log("🧹 Checking for stale games...");
         const stuckGames = await db.query("SELECT id, bet_amount, status FROM games WHERE status IN ('active', 'pending')");
         for (const game of stuckGames.rows) {
-            console.log(`⚠️ Cleaning up stuck game #${game.id}`);
             const players = await db.query("SELECT user_id FROM player_cards WHERE game_id = $1", [game.id]);
             for (let p of players.rows) {
                 await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [game.bet_amount, p.user_id]);
@@ -70,50 +68,31 @@ async function cleanupStaleGames() {
 cleanupStaleGames();
 
 function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCalledNumber) {
-    // 1. Ensure all marked numbers were actually called
     for (const numStr of markedCells) {
-        if (numStr !== 'FREE' && !calledNumbersSet.has(numStr)) {
-            return { valid: false, message: `Invalid! ${numStr} not called.` };
-        }
+        if (numStr !== 'FREE' && !calledNumbersSet.has(numStr)) return { valid: false, message: `Invalid! ${numStr} not called.` };
     }
-
-    // 2. Strict Rule: The last called number must be involved in the bingo
     const lastCalledStr = String(lastCalledNumber);
-    if (lastCalledNumber && !markedCells.has(lastCalledStr)) {
-         return { valid: false, message: "Must bingo on the LAST called number! / ቢንጎ ማለት ያለብዎት በመጨረሻው ቁጥር ነው።" };
-    }
+    if (lastCalledNumber && !markedCells.has(lastCalledStr)) return { valid: false, message: "Must bingo on the LAST called number!" };
 
-    const isMarked = (r, c) => {
-        const val = cardData[r][c];
-        return String(val) === 'FREE' || markedCells.has(String(val));
-    };
-
-    // Helper: Checks if a set of coords is fully marked AND includes the last called number
-    const checkSet = (coords) => {
-        const allMarked = coords.every(([r,c]) => isMarked(r,c));
-        if (!allMarked) return false;
-        
-        if (lastCalledNumber) {
-             return coords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr);
-        }
-        return true; 
-    };
-
-    // Define Grid Lines
+    const isMarked = (r, c) => { const val = cardData[r][c]; return String(val) === 'FREE' || markedCells.has(String(val)); };
+    
     const rows = [0,1,2,3,4].map(r => [0,1,2,3,4].map(c => [r,c]));
     const cols = [0,1,2,3,4].map(c => [0,1,2,3,4].map(r => [r,c]));
     const diag1 = [0,1,2,3,4].map(i => [i,i]);
     const diag2 = [0,1,2,3,4].map(i => [i, 4-i]);
+    
+    const checkSet = (coords) => {
+        const allMarked = coords.every(([r,c]) => isMarked(r,c));
+        if (!allMarked) return false;
+        if (lastCalledNumber) return coords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr);
+        return true; 
+    };
 
     switch (pattern) {
-        case 'any_line': 
-            for(const line of [...rows, ...cols, diag1, diag2]) if(checkSet(line)) return { valid: true }; 
-            break;
-        
-        case 'two_lines':
-            let validLines = 0; 
-            let lastNumUsed = false;
-            for(const line of [...rows, ...cols, diag1, diag2]) {
+        case 'any_line': for(const line of [...rows, ...cols, diag1, diag2]) if(checkSet(line)) return { valid: true }; break;
+        case 'two_lines': 
+             let validLines = 0; let lastNumUsed = false;
+             for(const line of [...rows, ...cols, diag1, diag2]) {
                  if (line.every(([r,c]) => isMarked(r,c))) {
                      validLines++;
                      if (line.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) lastNumUsed = true;
@@ -121,90 +100,66 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
             }
             if (validLines >= 2 && (lastNumUsed || !lastCalledNumber)) return { valid: true };
             break;
-            
         case 'x_shape': 
-            const xCoords = [...diag1, ...diag2];
-            // Must have both diagonals complete
-            if (diag1.every(([r,c]) => isMarked(r,c)) && diag2.every(([r,c]) => isMarked(r,c))) {
-                 if(!lastCalledNumber) return { valid: true };
-                 // Check if last number is part of the X
-                 if (xCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
-            }
-            break;
-            
+             const xCoords = [...diag1, ...diag2];
+             if (diag1.every(([r,c]) => isMarked(r,c)) && diag2.every(([r,c]) => isMarked(r,c))) {
+                  if(!lastCalledNumber) return { valid: true };
+                  if (xCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
+             }
+             break;
         case 'l_shape': 
-             // Col 0 + Row 4
              const lCoords = [...cols[0], ...rows[4]]; 
              if (lCoords.every(([r,c]) => isMarked(r,c))) {
                  if(!lastCalledNumber) return { valid: true };
                  if(lCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
              }
              break;
-             
         case 'corners': 
              const corners = [[0,0], [0,4], [4,0], [4,4]];
              if (checkSet(corners)) return { valid: true };
              break;
-             
         case 'plus_sign': 
-             // Col 2 + Row 2
              const plusCoords = [...cols[2], ...rows[2]];
              if (plusCoords.every(([r,c]) => isMarked(r,c))) {
                  if(!lastCalledNumber) return { valid: true };
                  if(plusCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
              }
              break;
-
         case 'u_shape': 
-             // Col 0 + Col 4 + Row 4
              const uCoords = [...cols[0], ...cols[4], ...rows[4]];
              if (uCoords.every(([r,c]) => isMarked(r,c))) {
                  if(!lastCalledNumber) return { valid: true };
                  if(uCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
              }
              break;
-
         case 'letter_h': 
-             // Col 0 + Col 4 + Middle (2,1), (2,2), (2,3)
              const hCoords = [...cols[0], ...cols[4], [2,1], [2,2], [2,3]];
              if (hCoords.every(([r,c]) => isMarked(r,c))) {
                  if(!lastCalledNumber) return { valid: true };
                  if(hCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
              }
              break;
-             
         case 'letter_t': 
-             // Row 0 + Col 2
              const tCoords = [...rows[0], ...cols[2]];
              if (tCoords.every(([r,c]) => isMarked(r,c))) {
                  if(!lastCalledNumber) return { valid: true };
                  if(tCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
              }
              break;
-             
         case 'frame': 
-             // Row 0, Row 4, Col 0, Col 4
              const frameCoords = [...rows[0], ...rows[4], ...cols[0], ...cols[4]];
              if (frameCoords.every(([r,c]) => isMarked(r,c))) {
                  if(!lastCalledNumber) return { valid: true };
                  if(frameCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
              }
              break;
-             
-        case 'full_house':
-            let all = true;
-            for(let r=0; r<5; r++) for(let c=0; c<5; c++) if(!isMarked(r,c)) all = false;
-            if (all) {
-                // If all marked, last number is guaranteed to be there if it was called
-                return { valid: true }; 
-            }
-            break;
-            
-        default:
-            // Fallback: Check Any Line
-            for(const line of [...rows, ...cols, diag1, diag2]) if(checkSet(line)) return { valid: true };
+        case 'full_house': 
+             let all=true; for(let r=0;r<5;r++)for(let c=0;c<5;c++)if(!isMarked(r,c))all=false; 
+             if(all) return {valid:true}; 
+             break;
+        default: for(const line of [...rows, ...cols, diag1, diag2]) if(checkSet(line)) return { valid: true };
     }
-    return { valid: false, message: `Invalid! Pattern not matched. / አልሰራም` };
+    return { valid: false, message: "Invalid!" };
 }
 
 async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
@@ -238,7 +193,6 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
             const game = { calledNumbers: new Set(), lastCalledNumber: null, io: io, intervalId: null, pattern, winners: new Set(), isEnding: false, cards: gameCards, dailyId, hasProcessedEnd: false };
             activeGames.set(gameId, game);
             
-            // Broadcast start
             io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'active', gameId, displayId: dailyId, pattern });
             console.log(`🚀 Game ${gameId} Started. Rule: ${pattern}`);
 
@@ -316,33 +270,47 @@ async function processGameEnd(gameId, io, game) {
          return;
     }
     
-    const { pot } = gameRes.rows[0];
+    const { pot, bet_amount } = gameRes.rows[0];
 
     try {
         if (winnerCount >= 1) {
+            // *** REFUND IF MORE THAN 3 WINNERS ***
+            if (winnerCount > 3) {
+                 await db.query("UPDATE games SET status = 'aborted' WHERE id = $1", [gameId]);
+                 // Refund everyone who bought a card
+                 const players = await db.query("SELECT user_id FROM player_cards WHERE game_id = $1", [gameId]);
+                 for (let p of players.rows) {
+                     await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [bet_amount, p.user_id]);
+                     if (db.logTransaction) await db.logTransaction(p.user_id, 'game_refund', bet_amount, null, gameId, `Refund (>3 Winners) Game #${game.dailyId}`);
+                 }
+                 winnerText = "Too many winners! Game Refunded.";
+                 io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'finished', gameId, displayId: game.dailyId, winner: "Refunded (>3 Winners)", pot: 0 });
+                 await db.query('COMMIT');
+                 if (gameEndCallback) gameEndCallback(gameId, "Refunded (>3 Winners)", game.dailyId);
+                 activeGames.delete(gameId);
+                 setTimeout(() => { io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'idle' }); }, 10000);
+                 return; // Stop here
+            }
+
+            // Normal Payout (1-3 Winners)
             const splitPrize = Math.floor(pot / winnerCount);
             await db.query("UPDATE games SET status = 'finished', winner_id = $1 WHERE id = $2", [winnerIds[0], gameId]);
-            // Log winner for tracking (using first winner for simple foreign key, split logic below handles payout)
-            // Note: DB schema only supports one winner_id in games table usually, but we pay everyone.
             
-            // Loop for split wins
             for (const uid of winnerIds) {
                 await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [splitPrize, uid]);
                 if (db.logTransaction) await db.logTransaction(uid, 'game_win', splitPrize, null, gameId, `Won Game #${game.dailyId} (Split ${winnerCount})`);
             }
-            const namesRes = await db.query("SELECT username, id, points FROM users WHERE id = ANY($1)", [winnerIds]);
-            await db.query('COMMIT');
-
+            const namesRes = await db.query("SELECT username, points, id FROM users WHERE id = ANY($1)", [winnerIds]);
             winnerText = namesRes.rows.map(u => u.username).join(" & ");
-            io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'finished', gameId, displayId: game.dailyId, winner: winnerText, pot: pot });
+            await db.query('COMMIT');
             
-            namesRes.rows.forEach(u => {
-                notifyUser(io, u.id, u.points, `🏆 WIN! +${splitPrize}`, true);
-            });
+            io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'finished', gameId, displayId: game.dailyId, winner: winnerText, pot: pot });
+            namesRes.rows.forEach(u => notifyUser(io, u.id, u.points, `🏆 WIN! +${splitPrize}`, true));
+        } else {
+             // 0 Winners
+            if (gameEndCallback) gameEndCallback(gameId, "No Winner", game.dailyId);
         }
         
-        if (gameEndCallback) gameEndCallback(gameId, winnerText || "No Winner", game.dailyId);
-
     } catch (e) {
         console.error(e);
         await db.query('ROLLBACK');
@@ -511,7 +479,6 @@ function initializeSocketListeners(io) {
         if (!socket.userId) return socket.emit('error', { message: 'Reconnect required' });
         const userId = socket.userId; const { gameId, cardGrid, cardId } = data; 
         
-        // FIX: Duplicate Check
         const existingCard = await db.query("SELECT id FROM player_cards WHERE user_id = $1 AND game_id = $2 AND original_card_id = $3", [userId, gameId, cardId]);
         if (existingCard.rows.length > 0) {
              return socket.emit('error', { message: 'Card already selected! / ካርዱ ተመርጧል' });
