@@ -164,7 +164,7 @@ function App() {
   
   const [audioEnabled, setAudioEnabled] = useState(false);
   const audioEnabledRef = useRef(false); 
-  const audioRef = useRef(new Audio());
+  const audioRef = useRef(new Audio()); // This is the MAIN audio player
   const audioQueue = useRef([]);
   const isPlaying = useRef(false);
 
@@ -174,16 +174,17 @@ function App() {
   useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
   useEffect(() => { langRef.current = lang; }, [lang]); 
 
-  // --- UNLOCK AUDIO ON FIRST INTERACTION (FIXED) ---
-  // This version only runs once to "warm up" the audio, but NEVER forces the state to true
+  // --- FIX: UNLOCK MAIN AUDIO PLAYER ON FIRST TOUCH ---
   useEffect(() => {
       const unlockAudio = () => {
-          // Just play a silent sound to satisfy the browser. 
-          // Do NOT call setAudioEnabled(true) here.
-          const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
-          silent.play().catch(() => {});
+          // We use audioRef.current to play the silent sound. 
+          // This "blesses" the main player so it works later.
+          if (audioRef.current) {
+            audioRef.current.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+            audioRef.current.play().catch(() => {});
+          }
           
-          // Remove listeners immediately so we don't do this again
+          // Remove listeners immediately
           window.removeEventListener('click', unlockAudio);
           window.removeEventListener('touchstart', unlockAudio);
       };
@@ -233,7 +234,7 @@ function App() {
   };
 
   const queueAudio = (filenames) => {
-      if (!audioEnabledRef.current) return; // Respect the user's choice!
+      if (!audioEnabledRef.current) return; 
       
       if (Array.isArray(filenames)) {
           audioQueue.current.push(...filenames);
@@ -296,13 +297,14 @@ function App() {
       }
   }, [gameState.calledNumbers]); 
 
+  // --- FIX: TOGGLE USES MAIN PLAYER ---
   const toggleAudio = () => {
       const newState = !audioEnabled;
       setAudioEnabled(newState);
       if (newState) {
-          // Explicitly play sound when user turns it ON to verify it works
-          const audio = new Audio(`/audio/${lang}/voice_on.mp3`);
-          audio.play().catch(e => console.log("Voice conf failed", e));
+          // Play on the MAIN ref to fix mobile issues
+          audioRef.current.src = `/audio/${langRef.current}/voice_on.mp3`;
+          audioRef.current.play().catch(e => console.log("Voice conf failed", e));
       }
   };
 
@@ -495,6 +497,7 @@ function App() {
           {gameState.status === 'idle' && (
             <div className="idle-screen"><h2>{t('waiting')}</h2><div className="pulse-dot"></div><p className="hint">{!audioEnabled?t('hintOff'):t('hintOn')}</p></div>
           )}
+          {/* UPDATED: Show displayId instead of raw gameId */}
           {gameState.status === 'finished' && <div className="winner">🎉 {t('winner')}: {gameState.winner} {t('won')} {gameState.pot} ! 🎉</div>}
           
           {(gameState.status === 'pending' || gameState.status === 'active') && (
