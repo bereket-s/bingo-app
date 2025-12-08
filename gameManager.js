@@ -51,44 +51,69 @@ const CALL_DELAY_MS = 6000;
 
 async function cleanupStaleGames() {
     try {
+        console.log("🧹 Checking for stale games...");
         const stuckGames = await db.query("SELECT id, bet_amount, status FROM games WHERE status IN ('active', 'pending')");
         for (const game of stuckGames.rows) {
+            console.log(`⚠️ Cleaning up stuck game #${game.id}`);
             const players = await db.query("SELECT user_id FROM player_cards WHERE game_id = $1", [game.id]);
             for (let p of players.rows) {
                 await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [game.bet_amount, p.user_id]);
+                try { 
+                    if (db.logTransaction) await db.logTransaction(p.user_id, 'system_refund', game.bet_amount, null, game.id, `Server Restart Refund Game #${game.id}`);
+                } catch(e) {}
             }
             await db.query("UPDATE games SET status = 'aborted' WHERE id = $1", [game.id]);
         }
+        console.log("✅ Stale games cleaned.");
     } catch (e) { console.error("Cleanup Error:", e); }
 }
 cleanupStaleGames();
 
 function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCalledNumber) {
+    // 1. Ensure all marked numbers were actually called
     for (const numStr of markedCells) {
-        if (numStr !== 'FREE' && !calledNumbersSet.has(numStr)) return { valid: false, message: `Invalid! ${numStr} not called.` };
+        if (numStr !== 'FREE' && !calledNumbersSet.has(numStr)) {
+            return { valid: false, message: `Invalid! ${numStr} not called.` };
+        }
     }
-    const lastCalledStr = String(lastCalledNumber);
-    if (lastCalledNumber && !markedCells.has(lastCalledStr)) return { valid: false, message: "Must bingo on the LAST called number!" };
 
-    const isMarked = (r, c) => { const val = cardData[r][c]; return String(val) === 'FREE' || markedCells.has(String(val)); };
-    
+    // 2. Strict Rule: The last called number must be involved in the bingo
+    const lastCalledStr = String(lastCalledNumber);
+    if (lastCalledNumber && !markedCells.has(lastCalledStr)) {
+         return { valid: false, message: "Must bingo on the LAST called number! / ቢንጎ ማለት ያለብዎት በመጨረሻው ቁጥር ነው።" };
+    }
+
+    const isMarked = (r, c) => {
+        const val = cardData[r][c];
+        return String(val) === 'FREE' || markedCells.has(String(val));
+    };
+
+    // Helper: Checks if a set of coords is fully marked AND includes the last called number
+    const checkSet = (coords) => {
+        const allMarked = coords.every(([r,c]) => isMarked(r,c));
+        if (!allMarked) return false;
+        
+        if (lastCalledNumber) {
+             return coords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr);
+        }
+        return true; 
+    };
+
+    // Define Grid Lines
     const rows = [0,1,2,3,4].map(r => [0,1,2,3,4].map(c => [r,c]));
     const cols = [0,1,2,3,4].map(c => [0,1,2,3,4].map(r => [r,c]));
     const diag1 = [0,1,2,3,4].map(i => [i,i]);
     const diag2 = [0,1,2,3,4].map(i => [i, 4-i]);
-    
-    const checkSet = (coords) => {
-        const allMarked = coords.every(([r,c]) => isMarked(r,c));
-        if (!allMarked) return false;
-        if (lastCalledNumber) return coords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr);
-        return true; 
-    };
 
     switch (pattern) {
-        case 'any_line': for(const line of [...rows, ...cols, diag1, diag2]) if(checkSet(line)) return { valid: true }; break;
-        case 'two_lines': 
-             let validLines = 0; let lastNumUsed = false;
-             for(const line of [...rows, ...cols, diag1, diag2]) {
+        case 'any_line': 
+            for(const line of [...rows, ...cols, diag1, diag2]) if(checkSet(line)) return { valid: true }; 
+            break;
+        
+        case 'two_lines':
+            let validLines = 0; 
+            let lastNumUsed = false;
+            for(const line of [...rows, ...cols, diag1, diag2]) {
                  if (line.every(([r,c]) => isMarked(r,c))) {
                      validLines++;
                      if (line.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) lastNumUsed = true;
@@ -96,12 +121,90 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
             }
             if (validLines >= 2 && (lastNumUsed || !lastCalledNumber)) return { valid: true };
             break;
-        case 'x_shape': if (diag1.every(([r,c]) => isMarked(r,c)) && diag2.every(([r,c]) => isMarked(r,c))) { if(!lastCalledNumber) return {valid:true}; if([ ...diag1, ...diag2 ].some(([r,c])=>String(cardData[r][c])===lastCalledStr)) return {valid:true}; } break;
-        case 'full_house': let all=true; for(let r=0;r<5;r++)for(let c=0;c<5;c++)if(!isMarked(r,c))all=false; if(all) return {valid:true}; break;
-        // Add simplified checks for other patterns to save space but keep functionality
-        default: for(const line of [...rows, ...cols, diag1, diag2]) if(checkSet(line)) return { valid: true };
+            
+        case 'x_shape': 
+            const xCoords = [...diag1, ...diag2];
+            // Must have both diagonals complete
+            if (diag1.every(([r,c]) => isMarked(r,c)) && diag2.every(([r,c]) => isMarked(r,c))) {
+                 if(!lastCalledNumber) return { valid: true };
+                 // Check if last number is part of the X
+                 if (xCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
+            }
+            break;
+            
+        case 'l_shape': 
+             // Col 0 + Row 4
+             const lCoords = [...cols[0], ...rows[4]]; 
+             if (lCoords.every(([r,c]) => isMarked(r,c))) {
+                 if(!lastCalledNumber) return { valid: true };
+                 if(lCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
+             }
+             break;
+             
+        case 'corners': 
+             const corners = [[0,0], [0,4], [4,0], [4,4]];
+             if (checkSet(corners)) return { valid: true };
+             break;
+             
+        case 'plus_sign': 
+             // Col 2 + Row 2
+             const plusCoords = [...cols[2], ...rows[2]];
+             if (plusCoords.every(([r,c]) => isMarked(r,c))) {
+                 if(!lastCalledNumber) return { valid: true };
+                 if(plusCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
+             }
+             break;
+
+        case 'u_shape': 
+             // Col 0 + Col 4 + Row 4
+             const uCoords = [...cols[0], ...cols[4], ...rows[4]];
+             if (uCoords.every(([r,c]) => isMarked(r,c))) {
+                 if(!lastCalledNumber) return { valid: true };
+                 if(uCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
+             }
+             break;
+
+        case 'letter_h': 
+             // Col 0 + Col 4 + Middle (2,1), (2,2), (2,3)
+             const hCoords = [...cols[0], ...cols[4], [2,1], [2,2], [2,3]];
+             if (hCoords.every(([r,c]) => isMarked(r,c))) {
+                 if(!lastCalledNumber) return { valid: true };
+                 if(hCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
+             }
+             break;
+             
+        case 'letter_t': 
+             // Row 0 + Col 2
+             const tCoords = [...rows[0], ...cols[2]];
+             if (tCoords.every(([r,c]) => isMarked(r,c))) {
+                 if(!lastCalledNumber) return { valid: true };
+                 if(tCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
+             }
+             break;
+             
+        case 'frame': 
+             // Row 0, Row 4, Col 0, Col 4
+             const frameCoords = [...rows[0], ...rows[4], ...cols[0], ...cols[4]];
+             if (frameCoords.every(([r,c]) => isMarked(r,c))) {
+                 if(!lastCalledNumber) return { valid: true };
+                 if(frameCoords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) return { valid: true };
+             }
+             break;
+             
+        case 'full_house':
+            let all = true;
+            for(let r=0; r<5; r++) for(let c=0; c<5; c++) if(!isMarked(r,c)) all = false;
+            if (all) {
+                // If all marked, last number is guaranteed to be there if it was called
+                return { valid: true }; 
+            }
+            break;
+            
+        default:
+            // Fallback: Check Any Line
+            for(const line of [...rows, ...cols, diag1, diag2]) if(checkSet(line)) return { valid: true };
     }
-    return { valid: false, message: "Invalid!" };
+    return { valid: false, message: `Invalid! Pattern not matched. / አልሰራም` };
 }
 
 async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
@@ -112,6 +215,7 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
     
     if (delaySeconds > 0) {
         io.to(`game_${gameId}`).emit('gameCountdown', { seconds: delaySeconds });
+        console.log(`⏱ Game ${gameId} starting in ${delaySeconds}s...`);
     }
 
     setTimeout(async () => {
@@ -119,13 +223,24 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
             await db.query("UPDATE games SET status = 'active' WHERE id = $1", [gameId]);
             pendingCardStates.delete(gameId);
             
-            const allCardsRes = await db.query(`SELECT pc.id, pc.user_id, pc.card_data, pc.original_card_id, u.premium_expires_at, u.pref_auto_bingo FROM player_cards pc JOIN users u ON pc.user_id = u.id WHERE pc.game_id = $1`, [gameId]);
-            const gameCards = allCardsRes.rows.map(row => ({ ...row, isPremium: row.premium_expires_at && new Date(row.premium_expires_at) > new Date() }));
+            const allCardsRes = await db.query(`
+                SELECT pc.id, pc.user_id, pc.card_data, pc.original_card_id,
+                    u.premium_expires_at, u.pref_auto_bingo 
+                FROM player_cards pc 
+                JOIN users u ON pc.user_id = u.id 
+                WHERE pc.game_id = $1`, [gameId]);
+
+            const gameCards = allCardsRes.rows.map(row => ({
+                ...row,
+                isPremium: row.premium_expires_at && new Date(row.premium_expires_at) > new Date()
+            }));
 
             const game = { calledNumbers: new Set(), lastCalledNumber: null, io: io, intervalId: null, pattern, winners: new Set(), isEnding: false, cards: gameCards, dailyId };
             activeGames.set(gameId, game);
             
+            // Broadcast start
             io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'active', gameId, displayId: dailyId, pattern });
+            console.log(`🚀 Game ${gameId} Started. Rule: ${pattern}`);
 
             game.intervalId = setInterval(async () => {
                 const checkStatus = await db.query("SELECT status FROM games WHERE id = $1", [gameId]);
@@ -135,12 +250,13 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
                     io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'idle' });
                     return;
                 }
+
                 if (game.isEnding) return;
 
                 if (game.calledNumbers.size >= 75) {
                     clearInterval(game.intervalId);
                     await db.query("UPDATE games SET status = 'finished' WHERE id = $1", [gameId]);
-                    game.io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'finished', winner: "No one" });
+                    game.io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'finished', winner: "No one / ማንም" });
                     if (gameEndCallback) gameEndCallback(gameId, "Draw (No Winner)", dailyId);
                     setTimeout(() => { game.io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'idle' }); }, 10000);
                     activeGames.delete(gameId);
@@ -154,13 +270,19 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
                 
                 game.io.to(`game_${gameId}`).emit('numberCalled', { number: newNumber, allCalled: [...game.calledNumbers] });
 
+                // Auto Bingo Logic
                 for (const card of game.cards) {
                     if (card.isPremium && card.pref_auto_bingo && !game.winners.has(card.user_id)) {
                         const potentialMarks = new Set([...game.calledNumbers]);
                         const { valid } = validateBingo(card.card_data, potentialMarks, game.calledNumbers, pattern, newNumber);
+                        
                         if (valid) {
                             game.winners.add(card.user_id);
-                            io.to(`game_${gameId}`).emit('bingoResult', { valid: true, message: `⚡ AUTO-BINGO!`, winningCardId: card.original_card_id });
+                            io.to(`game_${gameId}`).emit('bingoResult', { 
+                                valid: true, 
+                                message: `⚡ AUTO-BINGO! Checking winners...`,
+                                winningCardId: card.original_card_id 
+                            });
                             notifyUser(io, card.user_id, 0, "⚡ PREMIUM AUTO-BINGO!", true);
                             if (!game.isEnding) {
                                 game.isEnding = true;
@@ -171,7 +293,9 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
                     }
                 }
             }, CALL_DELAY_MS); 
-        } catch (e) { console.error("Error starting game logic:", e); }
+        } catch (e) {
+            console.error("Error starting game logic:", e);
+        }
     }, delaySeconds * 1000);
 }
 
@@ -181,28 +305,44 @@ async function processGameEnd(gameId, io, game) {
     let winnerText = "";
     
     await db.query('BEGIN');
-    const gameRes = await db.query("SELECT pot FROM games WHERE id = $1", [gameId]);
-    if (gameRes.rows.length === 0) { await db.query('ROLLBACK'); activeGames.delete(gameId); return; }
+    const gameRes = await db.query("SELECT pot, bet_amount FROM games WHERE id = $1", [gameId]);
+    
+    if (gameRes.rows.length === 0) {
+         await db.query('ROLLBACK');
+         activeGames.delete(gameId);
+         return;
+    }
+    
     const { pot } = gameRes.rows[0];
 
     try {
         if (winnerCount >= 1) {
             const splitPrize = Math.floor(pot / winnerCount);
             await db.query("UPDATE games SET status = 'finished', winner_id = $1 WHERE id = $2", [winnerIds[0], gameId]);
+            const userRes = await db.query("UPDATE users SET points = points + $1 WHERE id = $2 RETURNING username, points", [pot, winnerIds[0]]); // Simplification for 1 winner logic in logging, but splitting below
             
+            // Loop for split wins
             for (const uid of winnerIds) {
                 await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [splitPrize, uid]);
-                await db.logTransaction(uid, 'game_win', splitPrize, null, gameId, `Won Game #${game.dailyId}`);
+                if (db.logTransaction) await db.logTransaction(uid, 'game_win', splitPrize, null, gameId, `Won Game #${game.dailyId}`);
             }
-            const namesRes = await db.query("SELECT username, points, id FROM users WHERE id = ANY($1)", [winnerIds]);
-            winnerText = namesRes.rows.map(u => u.username).join(" & ");
+            const namesRes = await db.query("SELECT username, id, points FROM users WHERE id = ANY($1)", [winnerIds]);
             await db.query('COMMIT');
-            
+
+            winnerText = namesRes.rows.map(u => u.username).join(" & ");
             io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'finished', gameId, displayId: game.dailyId, winner: winnerText, pot: pot });
-            namesRes.rows.forEach(u => notifyUser(io, u.id, u.points, `🏆 WIN! +${splitPrize}`, true));
+            
+            namesRes.rows.forEach(u => {
+                notifyUser(io, u.id, u.points, `🏆 WIN! +${splitPrize}`, true);
+            });
         }
+        
         if (gameEndCallback) gameEndCallback(gameId, winnerText || "No Winner", game.dailyId);
-    } catch (e) { await db.query('ROLLBACK'); }
+
+    } catch (e) {
+        console.error(e);
+        await db.query('ROLLBACK');
+    }
 
     activeGames.delete(gameId);
     setTimeout(() => { io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'idle' }); }, 10000);
@@ -217,11 +357,14 @@ async function notifyUser(io, userId, points, msg, isWinner = false) {
                 s.emit('bingoResult', { valid: true, message: msg, isWinner });
             }
         }
-    } catch(e) {}
+    } catch(e) { console.error("Notify Error", e); }
 }
 
 async function authenticateUser(userId, token) {
-    try { const res = await db.query('SELECT * FROM users WHERE id = $1 AND session_token = $2', [userId, token]); return res.rows[0]; } catch (err) { return null; }
+    try {
+        const res = await db.query('SELECT * FROM users WHERE id = $1 AND session_token = $2', [userId, token]);
+        return res.rows[0];
+    } catch (err) { return null; }
 }
 
 async function getUser(telegramId) {
@@ -231,9 +374,17 @@ async function getUser(telegramId) {
 
 async function registerUserByPhone(phone, username) {
     const userCheck = await db.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [username]);
-    if (userCheck.rows.length > 0 && userCheck.rows[0].phone_number !== phone) return { error: "Username taken!" };
+    if (userCheck.rows.length > 0 && userCheck.rows[0].phone_number !== phone) {
+        return { error: "Username taken!" };
+    }
+
     const phoneCheck = await db.query("SELECT * FROM users WHERE phone_number = $1", [phone]);
-    if (phoneCheck.rows.length > 0) return { user: phoneCheck.rows[0], created: false };
+    if (phoneCheck.rows.length > 0) {
+        if (phoneCheck.rows[0].username.toLowerCase() !== username.toLowerCase()) {
+             return { error: `Phone used by '${phoneCheck.rows[0].username}'. Phone must be unique!` };
+        }
+        return { user: phoneCheck.rows[0], created: false };
+    }
     
     const insertRes = await db.query('INSERT INTO users (phone_number, username, points) VALUES ($1, $2, 100) RETURNING *', [phone, username]);
     return { user: insertRes.rows[0], created: true };
@@ -241,27 +392,40 @@ async function registerUserByPhone(phone, username) {
 
 async function linkTelegramAccount(phone, tgId, username) {
     const userCheck = await db.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [username]);
-    if (userCheck.rows.length > 0 && userCheck.rows[0].phone_number !== phone) return { error: "Username taken!" };
+    if (userCheck.rows.length > 0 && userCheck.rows[0].phone_number !== phone) {
+        return { error: "Username taken!" };
+    }
+
     const userByPhone = await db.query('SELECT * FROM users WHERE phone_number = $1', [phone]);
     if (userByPhone.rows.length > 0) {
         const updatedUser = await db.query('UPDATE users SET telegram_id = $1 WHERE phone_number = $2 RETURNING *', [tgId, phone]);
         return { user: updatedUser.rows[0], status: 'account_linked' };
     }
+
     const newUser = await db.query('INSERT INTO users (phone_number, telegram_id, username, points) VALUES ($1, $2, $3, 100) RETURNING *', [phone, tgId, username]);
     return { user: newUser.rows[0], status: 'new_user_created' };
 }
 
 function initializeSocketListeners(io) {
   io.on('connection', (socket) => {
+    
     socket.on('syncGameState', async (auth) => {
         const user = await authenticateUser(auth.userId, auth.token);
         if (!user) return socket.emit('error', { message: 'Auth failed' });
         socket.userId = user.id;
+        
         const hasPremium = user.premium_expires_at && new Date(user.premium_expires_at) > new Date();
-        socket.emit('playerUpdate', { username: user.username, points: user.points, isPremium: hasPremium, prefAutoDaub: user.pref_auto_daub, prefAutoBingo: user.pref_auto_bingo });
+        socket.emit('playerUpdate', { 
+            username: user.username, 
+            points: user.points, 
+            isPremium: hasPremium,
+            prefAutoDaub: user.pref_auto_daub,
+            prefAutoBingo: user.pref_auto_bingo 
+        });
 
         const gameRes = await db.query("SELECT * FROM games WHERE status = 'pending' OR status = 'active' ORDER BY id DESC LIMIT 1");
         if (gameRes.rows.length === 0) return socket.emit('gameStateUpdate', { status: 'idle' });
+        
         const game = gameRes.rows[0];
         const cardsRes = await db.query("SELECT id, original_card_id, card_data FROM player_cards WHERE user_id = $1 AND game_id = $2", [user.id, game.id]);
         
@@ -270,7 +434,7 @@ function initializeSocketListeners(io) {
         const activeGame = activeGames.get(game.id);
         const calledNumbers = activeGame ? [...activeGame.calledNumbers] : [];
         
-        socket.emit('gameStateUpdate', { status: game.status, gameId: game.id, displayId: game.daily_id, betAmount: game.bet_amount, pot: game.pot, calledNumbers, myCards, pattern: game.winning_pattern });
+        socket.emit('gameStateUpdate', { status: game.status, gameId: game.id, displayId: game.daily_id, betAmount: game.bet_amount, pot: game.pot, calledNumbers: calledNumbers, myCards: myCards, pattern: game.winning_pattern });
         
         if (game.status === 'pending' && pendingCardStates.has(game.id)) {
             const states = {};
@@ -281,24 +445,27 @@ function initializeSocketListeners(io) {
 
     socket.on('updatePreferences', async (data) => {
         if (!socket.userId) return; 
-        const userRes = await db.query("SELECT premium_expires_at FROM users WHERE id = $1", [socket.userId]);
+        const userId = socket.userId;
+        const { autoDaub, autoBingo } = data;
+        const userRes = await db.query("SELECT premium_expires_at FROM users WHERE id = $1", [userId]);
         if (userRes.rows.length && userRes.rows[0].premium_expires_at && new Date(userRes.rows[0].premium_expires_at) > new Date()) {
-             await db.query("UPDATE users SET pref_auto_daub = $1, pref_auto_bingo = $2 WHERE id = $3", [data.autoDaub, data.autoBingo, socket.userId]);
-             socket.emit('playerUpdate', { prefAutoDaub: data.autoDaub, prefAutoBingo: data.autoBingo });
+             await db.query("UPDATE users SET pref_auto_daub = $1, pref_auto_bingo = $2 WHERE id = $3", [autoDaub, autoBingo, userId]);
+             socket.emit('playerUpdate', { prefAutoDaub: autoDaub, prefAutoBingo: autoBingo });
         }
     });
 
     socket.on('requestCards', async (data) => {
         if (!socket.userId) return socket.emit('error', { message: 'Reconnect required' });
-        const { gameId } = data;
+        const userId = socket.userId; const { gameId } = data;
         const gameRes = await db.query("SELECT * FROM games WHERE id = $1 AND status = 'pending'", [gameId]);
-        if (gameRes.rows.length === 0) return socket.emit('error', { message: 'Game closed.' });
+        if (gameRes.rows.length === 0) return socket.emit('error', { message: 'Game closed. / ጨዋታው ተዘግቷል።' });
         const game = gameRes.rows[0];
-        const cardCountRes = await db.query("SELECT COUNT(*) FROM player_cards WHERE user_id = $1 AND game_id = $2", [socket.userId, gameId]);
-        if (parseInt(cardCountRes.rows[0].count) >= MAX_CARDS_PER_PLAYER) return socket.emit('error', { message: 'Max cards reached.' });
+        const cardCountRes = await db.query("SELECT COUNT(*) FROM player_cards WHERE user_id = $1 AND game_id = $2", [userId, gameId]);
+        if (parseInt(cardCountRes.rows[0].count) >= MAX_CARDS_PER_PLAYER) return socket.emit('error', { message: 'Max cards reached. / ከፍተኛ ካርድ ቁጥር ደርሰዋል።' });
         
-        const userRes = await db.query("SELECT * FROM users WHERE id = $1", [socket.userId]);
-        if (userRes.rows[0].points < game.bet_amount) return socket.emit('error', { message: 'Not enough points.' });
+        const userRes = await db.query("SELECT * FROM users WHERE id = $1", [userId]);
+        if (userRes.rows.length === 0) return socket.emit('error', { message: 'User not found.' });
+        if (userRes.rows[0].points < game.bet_amount) return socket.emit('error', { message: 'Not enough points. / ነጥብዎ በቂ አይደለም።' });
 
         const room = io.sockets.adapter.rooms.get(`game_${gameId}`);
         const playerCount = room ? room.size : 1;
@@ -309,6 +476,7 @@ function initializeSocketListeners(io) {
 
     socket.on('viewCard', (data) => {
         if (!socket.userId) return;
+        const userId = socket.userId; 
         const { gameId, cardId, isViewing } = data;
         if (!pendingCardStates.has(gameId)) pendingCardStates.set(gameId, new Map());
         const gameStates = pendingCardStates.get(gameId);
@@ -316,17 +484,18 @@ function initializeSocketListeners(io) {
         const cardState = gameStates.get(cardId);
 
         if (isViewing) {
-            if (cardState.takenBy) return socket.emit('error', { message: 'Card taken!' });
-            cardState.viewers.add(socket.userId);
+            if (cardState.takenBy) return socket.emit('error', { message: 'Card taken! / ካርዱ ተይዟል!' });
+            if (cardState.viewers.size > 0 && !cardState.viewers.has(userId)) return socket.emit('error', { message: 'Locked by another player! / በሌላ ሰው እየታየ ነው!' });
+            cardState.viewers.add(userId);
         } else {
-            cardState.viewers.delete(socket.userId);
+            cardState.viewers.delete(userId);
         }
         io.to(`game_${gameId}`).emit('cardStatesUpdate', { [cardId]: { viewers: Array.from(cardState.viewers), takenBy: cardState.takenBy } });
     });
 
     socket.on('requestSpecificCard', async (data) => {
         if (!socket.userId) return;
-        const { gameId, cardNumber } = data; 
+        const userId = socket.userId; const { gameId, cardNumber } = data; 
         const gameRes = await db.query("SELECT * FROM games WHERE id = $1 AND status = 'pending'", [gameId]);
         if (gameRes.rows.length === 0) return; 
         const cardNumInt = parseInt(cardNumber);
@@ -336,33 +505,43 @@ function initializeSocketListeners(io) {
     
     socket.on('selectCard', async (data) => {
         if (!socket.userId) return socket.emit('error', { message: 'Reconnect required' });
-        const { gameId, cardGrid, cardId } = data; 
+        const userId = socket.userId; const { gameId, cardGrid, cardId } = data; 
         
-        const existingCard = await db.query("SELECT id FROM player_cards WHERE user_id = $1 AND game_id = $2 AND original_card_id = $3", [socket.userId, gameId, cardId]);
-        if (existingCard.rows.length > 0) return socket.emit('error', { message: 'Card already selected!' });
+        // FIX: Duplicate Check
+        const existingCard = await db.query("SELECT id FROM player_cards WHERE user_id = $1 AND game_id = $2 AND original_card_id = $3", [userId, gameId, cardId]);
+        if (existingCard.rows.length > 0) {
+             return socket.emit('error', { message: 'Card already selected! / ካርዱ ተመርጧል' });
+        }
 
         const gameRes = await db.query("SELECT * FROM games WHERE id = $1 AND status = 'pending'", [gameId]);
-        if (gameRes.rows.length === 0) return socket.emit('error', { message: 'Game closed.' });
+        if (gameRes.rows.length === 0) return socket.emit('error', { message: 'Game closed. / ጨዋታው ተዘግቷል።' });
         const game = gameRes.rows[0];
-        
         if (cardId && pendingCardStates.has(gameId)) {
             const state = pendingCardStates.get(gameId).get(cardId);
-            if (state && state.takenBy && state.takenBy !== socket.userId) return socket.emit('error', { message: 'Card taken!' });
+            if (state && state.takenBy && state.takenBy !== userId) return socket.emit('error', { message: 'Card taken! / ካርዱ ተይዟል!' });
         }
         
+        const userRes = await db.query("SELECT points FROM users WHERE id = $1", [userId]);
+        if (userRes.rows.length === 0) return socket.emit('error', { message: 'User error. Please reload.' });
+
+        if (userRes.rows[0].points < game.bet_amount) return socket.emit('error', { message: 'Not enough points. / ነጥብ በቂ አይደለም።' });
         try {
             await db.query('BEGIN');
-            const updatedUser = await db.query("UPDATE users SET points = points - $1 WHERE id = $2 RETURNING points", [game.bet_amount, socket.userId]);
+            const updatedUser = await db.query("UPDATE users SET points = points - $1 WHERE id = $2 RETURNING points", [game.bet_amount, userId]);
             const updatedGame = await db.query("UPDATE games SET pot = pot + $1 WHERE id = $2 RETURNING pot", [game.bet_amount, game.id]);
-            const cardRes = await db.query("INSERT INTO player_cards (user_id, game_id, card_data, original_card_id) VALUES ($1, $2, $3, $4) RETURNING *", [socket.userId, gameId, JSON.stringify(cardGrid), cardId]);
+            const cardRes = await db.query("INSERT INTO player_cards (user_id, game_id, card_data, original_card_id) VALUES ($1, $2, $3, $4) RETURNING *", [userId, gameId, JSON.stringify(cardGrid), cardId]);
             await db.query('COMMIT');
             
-            await db.logTransaction(socket.userId, 'game_bet', -game.bet_amount, null, gameId, `Bet on Game #${game.daily_id || gameId}`);
+            // Log Bet Transaction
+            if(db.logTransaction) await db.logTransaction(userId, 'game_bet', -game.bet_amount, null, gameId, `Bet on Game #${game.daily_id || gameId}`);
             
             if(activeGames.has(game.id)) {
                const g = activeGames.get(game.id);
                const allCardsRes = await db.query("SELECT pc.id, pc.user_id, pc.card_data, u.premium_expires_at, u.pref_auto_bingo FROM player_cards pc JOIN users u ON pc.user_id = u.id WHERE pc.game_id = $1", [gameId]);
-               g.cards = allCardsRes.rows.map(row => ({ ...row, isPremium: row.premium_expires_at && new Date(row.premium_expires_at) > new Date() }));
+               g.cards = allCardsRes.rows.map(row => ({
+                    ...row,
+                    isPremium: row.premium_expires_at && new Date(row.premium_expires_at) > new Date()
+                }));
             }
 
             if (cardId) {
@@ -370,8 +549,8 @@ function initializeSocketListeners(io) {
                 const gameStates = pendingCardStates.get(gameId);
                 if (!gameStates.has(cardId)) gameStates.set(cardId, { viewers: new Set(), takenBy: null });
                 const state = gameStates.get(cardId);
-                state.takenBy = socket.userId; state.viewers.delete(socket.userId);
-                io.to(`game_${gameId}`).emit('cardStatesUpdate', { [cardId]: { viewers: Array.from(state.viewers), takenBy: socket.userId } });
+                state.takenBy = userId; state.viewers.delete(userId);
+                io.to(`game_${gameId}`).emit('cardStatesUpdate', { [cardId]: { viewers: Array.from(state.viewers), takenBy: userId } });
             }
             socket.emit('joinSuccess', { card: { id: cardRes.rows[0].id, displayId: cardId, card_data: cardRes.rows[0].card_data } });
             socket.emit('playerUpdate', { points: updatedUser.rows[0].points });
@@ -381,26 +560,27 @@ function initializeSocketListeners(io) {
 
     socket.on('claimBingo', async (data) => {
         if (!socket.userId) return socket.emit('error', { message: 'Reconnect required' });
+        const userId = socket.userId;
         const { cardId, gameId, markedCells } = data;
         const game = activeGames.get(gameId);
         if (!game) return socket.emit('bingoResult', { valid: false, message: 'Game not active.' });
         
-        const res = await db.query("SELECT card_data, original_card_id FROM player_cards WHERE id = $1 AND user_id = $2 AND game_id = $3", [cardId, socket.userId, gameId]);
+        const res = await db.query("SELECT card_data, original_card_id FROM player_cards WHERE id = $1 AND user_id = $2 AND game_id = $3", [cardId, userId, gameId]);
         if (res.rows.length === 0) return socket.emit('bingoResult', { valid: false, message: 'Card not found.' });
         
         const { valid, message } = validateBingo(res.rows[0].card_data, new Set((markedCells||[]).map(String)), game.calledNumbers, game.pattern, game.lastCalledNumber);
         
         if (valid) {
-            game.winners.add(socket.userId);
-            socket.emit('bingoResult', { valid: true, message: 'Bingo! Checking...', winningCardId: res.rows[0].original_card_id });
+            game.winners.add(userId);
+            socket.emit('bingoResult', { valid: true, message: 'Bingo! Checking other players...', winningCardId: res.rows[0].original_card_id });
             if (!game.isEnding) {
                 game.isEnding = true;
                 clearInterval(game.intervalId); 
-                io.to(`game_${gameId}`).emit('bingoResult', { valid: true, message: 'BINGO CLAIMED!', winningCardId: res.rows[0].original_card_id });
+                io.to(`game_${gameId}`).emit('bingoResult', { valid: true, message: 'BINGO CLAIMED! Checking splits...', winningCardId: res.rows[0].original_card_id });
                 setTimeout(() => { processGameEnd(gameId, io, game); }, 5000); 
             }
         } else {
-            socket.emit('bingoResult', { valid: false, message: message || 'Not a bingo.' });
+            socket.emit('bingoResult', { valid: false, message: message || 'Not a bingo. / ቢንጎ አልሰራም።' });
         }
     });
   });
