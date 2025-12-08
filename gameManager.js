@@ -235,7 +235,7 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
                 isPremium: row.premium_expires_at && new Date(row.premium_expires_at) > new Date()
             }));
 
-            const game = { calledNumbers: new Set(), lastCalledNumber: null, io: io, intervalId: null, pattern, winners: new Set(), isEnding: false, cards: gameCards, dailyId };
+            const game = { calledNumbers: new Set(), lastCalledNumber: null, io: io, intervalId: null, pattern, winners: new Set(), isEnding: false, cards: gameCards, dailyId, hasProcessedEnd: false };
             activeGames.set(gameId, game);
             
             // Broadcast start
@@ -300,6 +300,9 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
 }
 
 async function processGameEnd(gameId, io, game) {
+    if (game.hasProcessedEnd) return;
+    game.hasProcessedEnd = true;
+
     const winnerIds = Array.from(game.winners);
     const winnerCount = winnerIds.length;
     let winnerText = "";
@@ -319,12 +322,13 @@ async function processGameEnd(gameId, io, game) {
         if (winnerCount >= 1) {
             const splitPrize = Math.floor(pot / winnerCount);
             await db.query("UPDATE games SET status = 'finished', winner_id = $1 WHERE id = $2", [winnerIds[0], gameId]);
-            const userRes = await db.query("UPDATE users SET points = points + $1 WHERE id = $2 RETURNING username, points", [pot, winnerIds[0]]); // Simplification for 1 winner logic in logging, but splitting below
+            // Log winner for tracking (using first winner for simple foreign key, split logic below handles payout)
+            // Note: DB schema only supports one winner_id in games table usually, but we pay everyone.
             
             // Loop for split wins
             for (const uid of winnerIds) {
                 await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [splitPrize, uid]);
-                if (db.logTransaction) await db.logTransaction(uid, 'game_win', splitPrize, null, gameId, `Won Game #${game.dailyId}`);
+                if (db.logTransaction) await db.logTransaction(uid, 'game_win', splitPrize, null, gameId, `Won Game #${game.dailyId} (Split ${winnerCount})`);
             }
             const namesRes = await db.query("SELECT username, id, points FROM users WHERE id = ANY($1)", [winnerIds]);
             await db.query('COMMIT');
