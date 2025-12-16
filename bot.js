@@ -58,7 +58,8 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "🏦 Set Bank / ባንክ አስገባ" }, { text: "📈 Global Stats" }],
           [{ text: "➕ Add Points" }, { text: "➖ Remove Points" }],
           [{ text: "➕ Bulk Add" }, { text: "🔄 Reset" }],
-          [{ text: "📊 Daily Stats" }, { text: "📋 Transactions" }]
+          [{ text: "📊 Daily Stats" }, { text: "📋 Transactions" }],
+          [{ text: "⚠️ Reset All Points" }] // NEW BUTTON
       ],
       resize_keyboard: true,
       persistent: true
@@ -125,11 +126,11 @@ const startBot = (database, socketIo, startGameLogic) => {
       for (const id of allAdmins) {
           let opts = { ...options };
           if (!opts.reply_markup) {
-             // We need to resolve the promise inside the loop or fetch roles beforehand.
-             // For simplicity/performance in broadcast, we'll just check quickly or default to adminKeyboard.
-             // A better way is to check role individually but that's slow. 
-             // Defaulting to adminKeyboard is safe for broadcast messages.
-             opts.reply_markup = adminKeyboard; 
+             if (await isSuperAdmin(id)) {
+                 opts.reply_markup = superAdminKeyboard;
+             } else {
+                 opts.reply_markup = adminKeyboard;
+             }
           }
           bot.sendMessage(id, text, opts).catch((e) => {});
       }
@@ -371,7 +372,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                  
                  try {
                     await bot.editMessageText(newText, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: kb });
-                    // Send invite link again for convenience on refresh
                     const pattern = gameRes.rows[0].winning_pattern;
                     const inviteLink = `https://t.me/${botUsername}?start=bingo`;
                     // const inviteMsg = `📢 **Game #${gameId} Open!**\nBet: ${betAmt}\nRule: ${pattern.replace('_', ' ').toUpperCase()}\n👉 [Join Game](${inviteLink})`;
@@ -525,7 +525,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         if (user) {
             triggerStart(chatId, user);
         } else {
-            // FIX: EXPLICITLY HANDLE UNLINKED ADMINS
             bot.sendMessage(chatId, "⚠️ **Account Not Linked**\n\nYou are an Admin, but your Telegram account isn't linked to a player profile yet.\n\n👇 **Press the button below to link:**", { 
                 reply_markup: shareContactKeyboard, 
                 parse_mode: "Markdown" 
@@ -574,7 +573,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    // --- NEW: Edit Name (Player) ---
     if (text.startsWith("✏️ Edit Name")) {
         if(!user) return;
         chatStates[chatId] = { step: 'awaiting_new_username' };
@@ -582,7 +580,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    // --- NEW: About / Description ---
     if (text.startsWith("ℹ️ About") || text.startsWith("🆘 Help")) {
         const aboutMsg = `ℹ️ **About BingoBot**\n\n` +
                          `Welcome to the ultimate Bingo game!\n\n` +
@@ -709,6 +706,10 @@ const startBot = (database, socketIo, startGameLogic) => {
         if (text.startsWith("🗑️ Delete User")) {
             chatStates[chatId] = { step: 'awaiting_delete_username' };
             return bot.sendMessage(chatId, "🗑️ **Delete User**\n\nEnter the username to delete (This will remove all their data!):", { parse_mode: "Markdown" });
+        }
+        if (text.startsWith("⚠️ Reset All Points")) {
+            chatStates[chatId] = { step: 'awaiting_reset_confirm' };
+            return bot.sendMessage(chatId, "⚠️ **DANGER ZONE** ⚠️\n\nThis will set ALL players' points to 0.\nAre you sure?\n\nType **CONFIRM** to proceed.", { parse_mode: "Markdown" });
         }
         if (text.startsWith("📜 Players")) {
              try {
@@ -1033,6 +1034,20 @@ const startBot = (database, socketIo, startGameLogic) => {
                     // Finally delete user
                     await db.query("DELETE FROM users WHERE id = $1", [uid]);
                     bot.sendMessage(chatId, `🗑️ **${uRes.rows[0].username}** has been permanently deleted.`, { parse_mode: "Markdown" });
+                }
+                delete chatStates[chatId];
+            }
+
+            // --- NEW: Handle Reset All Points Input ---
+            else if (state.step === 'awaiting_reset_confirm') {
+                if (text.toUpperCase() === 'CONFIRM') {
+                     // 1. Log transaction for safety (Resetting everyone is a big deal)
+                     await db.query("INSERT INTO transactions (type, amount, description) VALUES ('system_reset', 0, 'RESET ALL POINTS BY ADMIN')");
+                     // 2. Set all points to 0 for ROLE = player (keep admins safe if you want, or just everyone)
+                     await db.query("UPDATE users SET points = 0 WHERE role = 'player'");
+                     bot.sendMessage(chatId, "✅ **RESET COMPLETE.** All players now have 0 points.", { parse_mode: "Markdown", reply_markup: adminKeyboard });
+                } else {
+                     bot.sendMessage(chatId, "❌ Reset Cancelled.", { reply_markup: adminKeyboard });
                 }
                 delete chatStates[chatId];
             }
