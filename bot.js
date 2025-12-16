@@ -55,11 +55,11 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "🚀 Play / ይጫወቱ" }, { text: "🆕 New Game / አዲስ ጨዋታ" }],
           [{ text: "📝 Register / መዝግብ" }, { text: "📝 Bulk Register / በጅምላ" }],
           [{ text: "📜 Players / ተጫዋቾች" }, { text: "🗑️ Delete User / አስወግድ" }],
-          [{ text: "🏦 Set Bank / ባንክ አስገባ" }, { text: "📈 Global Stats" }],
+          [{ text: "🏦 Set Bank / ባንክ አስገባ" }, { text: "📢 Set Group Link" }], // NEW
           [{ text: "➕ Add Points" }, { text: "➖ Remove Points" }],
           [{ text: "➕ Bulk Add" }, { text: "🔄 Reset" }],
           [{ text: "📊 Daily Stats" }, { text: "📋 Transactions" }],
-          [{ text: "⚠️ Reset All Points" }] // NEW BUTTON
+          [{ text: "📈 Global Stats" }, { text: "⚠️ Reset All Points" }]
       ],
       resize_keyboard: true,
       persistent: true
@@ -79,7 +79,7 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "🚀 Play Bingo / ጨዋታውን ጀምር" }],
           [{ text: "💰 My Points / ነጥቦቼ" }, { text: "🏦 Deposit / ገቢ አድርግ" }],
           [{ text: "💸 Transfer / አስተላልፍ" }, { text: "🏧 Withdraw / ወጪ አድርግ" }],
-          [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "ℹ️ About / ስለ ቦቱ" }], 
+          [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "ℹ️ Guide / መመሪያ" }], // UPDATED
           [{ text: "🌟 Buy Premium / ፕሪሚየም ይግዙ" }, { text: "🆘 Help / እርዳታ" }]
       ],
       resize_keyboard: true,
@@ -102,14 +102,25 @@ const startBot = (database, socketIo, startGameLogic) => {
   };
 
   // --- GAME END CALLBACK ---
-  setGameEndCallback((gameId, winnerText, dailyId) => {
+  setGameEndCallback(async (gameId, winnerText, dailyId) => {
       const safeWinner = escapeMarkdown(winnerText);
       const displayId = dailyId || gameId;
       const msg = `🏁 *GAME #${displayId} FINISHED!* / *ጨዋታ #${displayId} ተጠናቀቀ!*\n\n` +
                   `🏆 Winner: ${safeWinner}\n` +
                   `🏆 አሸናፊ: ${safeWinner}\n\n` +
                   `👇 *Admin Menu Restored:*`;
+      
       broadcastToAdmins(msg, { parse_mode: "Markdown" });
+
+      // Announce Winner to Group
+      const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
+      const groupLink = groupRes.rows[0]?.value; 
+      // Note: We need a Chat ID (e.g., -100xxxxx) to send messages, but user provides a Link. 
+      // For simplicity, we only broadcast to admins here. 
+      // If 'group_chat_id' stores the numeric ID, we can use it:
+      if (groupLink && groupLink.startsWith('-100')) {
+          bot.sendMessage(groupLink, `🏁 *GAME #${displayId} FINISHED!*\n🏆 Winner: ${safeWinner}`, { parse_mode: "Markdown" }).catch(()=>{});
+      }
   });
 
   // --- HELPERS ---
@@ -372,9 +383,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                  
                  try {
                     await bot.editMessageText(newText, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: kb });
-                    const pattern = gameRes.rows[0].winning_pattern;
-                    const inviteLink = `https://t.me/${botUsername}?start=bingo`;
-                    // const inviteMsg = `📢 **Game #${gameId} Open!**\nBet: ${betAmt}\nRule: ${pattern.replace('_', ' ').toUpperCase()}\n👉 [Join Game](${inviteLink})`;
                  } catch(e) { }
                  await bot.answerCallbackQuery(cq.id, { text: "Stats Refreshed!" });
             } 
@@ -512,7 +520,7 @@ const startBot = (database, socketIo, startGameLogic) => {
     
     if (!text) return;
 
-    const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ About", "🗑️ Delete User"];
+    const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ Guide", "🗑️ Delete User"];
     if (mainMenuButtons.some(btn => text.startsWith(btn))) {
         if (chatStates[chatId]) delete chatStates[chatId];
     }
@@ -580,21 +588,31 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    if (text.startsWith("ℹ️ About") || text.startsWith("🆘 Help")) {
-        const aboutMsg = `ℹ️ **About BingoBot**\n\n` +
-                         `Welcome to the ultimate Bingo game!\n\n` +
-                         `🎮 **How to Play:**\n` +
-                         `1. Wait for Admin to start a game.\n` +
-                         `2. Buy cards using your Points.\n` +
-                         `3. Numbers will be called automatically.\n` +
-                         `4. If you complete the pattern, press **BINGO!**\n\n` +
-                         `💰 **Points:**\n` +
-                         `- Deposit money to get points.\n` +
-                         `- Win games to earn more points.\n` +
-                         `- Withdraw points back to money.\n\n` +
-                         `🇪🇹 **Amharic / አማርኛ:**\n` +
-                         `ይህ የቢንጎ ጨዋታ ነው። አድሚኑ ጨዋታ ሲጀምር ካርድ ይግዙ። ቁጥሮች ሲጠሩ ይምረጡ። አሸናፊ ሲሆኑ **BINGO** ይበሉ!`;
-        bot.sendMessage(chatId, aboutMsg, { parse_mode: "Markdown" });
+    // --- UPDATED: GUIDE / HELP ---
+    if (text.startsWith("ℹ️ Guide") || text.startsWith("🆘 Help")) {
+        const guideMsg = `ℹ️ **BINGO BOT USER GUIDE / የተጠቃሚ መመሪያ**\n\n` +
+                         `🚀 **Play / ይጫወቱ:**\n` +
+                         `Generates a link to open the Bingo Game App.\n` +
+                         `ወደ ቢንጎ ጨዋታው መግቢያ ሊንክ ይልካል።\n\n` +
+                         `💰 **My Points / ነጥቦቼ:**\n` +
+                         `Check your current balance and premium status.\n` +
+                         `ያለዎትን ነጥብ እና የፕሪሚየም ሁኔታ ያሳያል።\n\n` +
+                         `🏦 **Deposit / ገቢ አድርግ:**\n` +
+                         `Add money to your account via Telebirr/CBE.\n` +
+                         `በቴሌብር ወይም ባንክ አካውንትዎ ላይ ገንዘብ (ነጥብ) ለመሙላት።\n\n` +
+                         `💸 **Transfer / አስተላልፍ:**\n` +
+                         `Send points to another player instantly.\n` +
+                         `ለሌላ ተጫዋች ነጥብ ለማስተላለፍ።\n\n` +
+                         `🏧 **Withdraw / ወጪ አድርግ:**\n` +
+                         `Request to cash out your points.\n` +
+                         `ነጥብዎን ወደ ገንዘብ ቀይረው ለማውጣት።\n\n` +
+                         `✏️ **Edit Name / ስም ቀይር:**\n` +
+                         `Change your display name.\n` +
+                         `በጨዋታው ላይ የሚታየውን ስምዎን ለመቀየር።\n\n` +
+                         `🌟 **Buy Premium / ፕሪሚየም ይግዙ:**\n` +
+                         `Enable Auto-Daub & Auto-Bingo.\n` +
+                         `ካርዶ ትክክለኛ ቁጥር ሲጠራ እራሱ እንዲመርጥ እና ቢንጎ እንዲል (Auto-Play)።`;
+        bot.sendMessage(chatId, guideMsg, { parse_mode: "Markdown" });
         return;
     }
 
@@ -690,6 +708,10 @@ const startBot = (database, socketIo, startGameLogic) => {
         if (text.startsWith("🏦 Set Bank")) {
              chatStates[chatId] = { step: 'awaiting_bank_update' };
              return bot.sendMessage(chatId, "Enter new Bank Details:").catch(()=>{});
+        }
+        if (text.startsWith("📢 Set Group Link")) { // NEW
+             chatStates[chatId] = { step: 'awaiting_group_link' };
+             return bot.sendMessage(chatId, "📢 **Set Group ID/Link**\n\nEnter the Group ID (e.g., -1001234567890) where game alerts should be sent:\n\n*Tip: Add the bot to the group as Admin first, then send any message in the group to get the ID.*", { parse_mode: "Markdown" }).catch(()=>{});
         }
         if (text.startsWith("➕ Add Points")) {
             chatStates[chatId] = { step: 'awaiting_add_username' };
@@ -793,7 +815,13 @@ const startBot = (database, socketIo, startGameLogic) => {
                 if (error) {
                     bot.sendMessage(chatId, `❌ ${error}`).catch(()=>{});
                 } else {
-                    bot.sendMessage(chatId, `✅ *Registered!*\nUser: ${escapeMarkdown(user.username)}`, { parse_mode: "Markdown" }).catch(()=>{});
+                    // NEW: Include Join Group button
+                    const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
+                    const groupUrl = groupRes.rows[0]?.value;
+                    const opts = { parse_mode: "Markdown" };
+                    if (groupUrl) opts.reply_markup = { inline_keyboard: [[{ text: "📢 Join Group", url: groupUrl }]] };
+
+                    bot.sendMessage(chatId, `✅ *Registered!*\nUser: ${escapeMarkdown(user.username)}`, opts).catch(()=>{});
                     bot.sendMessage(chatId, `📩 *Forward this to the player:*`, { parse_mode: "Markdown" }).catch(()=>{});
                     bot.sendMessage(chatId, getInviteText(), { parse_mode: "Markdown" }).catch(()=>{});
                 }
@@ -823,11 +851,17 @@ const startBot = (database, socketIo, startGameLogic) => {
                 if (result.error) {
                      bot.sendMessage(chatId, `❌ **Error:** ${result.error}\n\nTry /start again.`, { reply_markup: userKeyboard });
                 } else {
+                     // NEW: JOIN GROUP BUTTON
+                     const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
+                     const groupUrl = groupRes.rows[0]?.value;
+                     const opts = { parse_mode: "Markdown" };
+                     if (groupUrl) opts.reply_markup = { inline_keyboard: [[{ text: "📢 Join Group", url: groupUrl }]] };
+
                      if (await isAdmin(tgId) || await isSuperAdmin(tgId)) {
                          const kb = (await isSuperAdmin(tgId)) ? superAdminKeyboard : adminKeyboard;
-                         bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nRegistered as: ${result.user.username}`, { reply_markup: kb, parse_mode: "Markdown" });
+                         bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nRegistered as: ${result.user.username}`, { ...opts, reply_markup: kb });
                      } else {
-                         bot.sendMessage(chatId, `✅ **Registered!**\nWelcome, ${result.user.username}!`, { reply_markup: userKeyboard, parse_mode: "Markdown" });
+                         bot.sendMessage(chatId, `✅ **Registered!**\nWelcome, ${result.user.username}!`, { ...opts, reply_markup: userKeyboard });
                      }
                      triggerStart(chatId, result.user);
                 }
@@ -927,22 +961,30 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const gameId = res.rows[0].id;
                 io.emit('gameStateUpdate', { status: 'pending', gameId, displayId: dailyId, betAmount: betAmount, pot: 0, calledNumbers: [], pattern });
                 
-                // --- FIX: SEND INVITE LINK IMMEDIATELY ---
+                // --- NEW: ANNOUNCE TO GROUP ---
+                const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
+                const groupLinkRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
+                const groupChatId = groupRes.rows[0]?.value;
+                const groupUrl = groupLinkRes.rows[0]?.value;
                 const inviteLink = `https://t.me/${botUsername}?start=bingo`;
+                
                 const inviteMsg = `📢 **Bingo Game #${dailyId} Open!**\n\n` +
                                   `Bet: ${betAmount} Points\n` +
                                   `Rule: ${pattern.replace('_', ' ').toUpperCase()}\n\n` +
                                   `👇 **Click here to Join:**\n${inviteLink}`;
                 
+                if (groupChatId) {
+                    bot.sendMessage(groupChatId, inviteMsg, { parse_mode: "Markdown" }).catch(e => console.error("Group Send Error:", e.message));
+                }
+
                 const dashMsg = `🎮 *Game #${dailyId} Pending*\nBet: ${betAmount}\n\n👇 *Wait for players then Start:*`;
                 const kb = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `gm_refresh_${gameId}` }], [{ text: "▶️ START", callback_data: `gm_pre_${gameId}` }], [{ text: "🛑 Abort", callback_data: `gm_abort_${gameId}` }]] };
                 
                 bot.sendMessage(chatId, dashMsg, { parse_mode: "Markdown", reply_markup: kb }).catch(()=>{});
                 
-                // Send the forwarding message
+                // Also send forwarding message to admin
                 setTimeout(() => {
                     bot.sendMessage(chatId, inviteMsg, { parse_mode: "Markdown" }).catch(()=>{});
-                    bot.sendMessage(chatId, "⬆️ **Forward the message above to your Group/Channel!**", { parse_mode: "Markdown" }).catch(()=>{});
                 }, 500); 
 
                 delete chatStates[chatId]; 
@@ -951,6 +993,27 @@ const startBot = (database, socketIo, startGameLogic) => {
                 await db.query("INSERT INTO system_settings (key, value) VALUES ('bank_details', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text]);
                 delete chatStates[chatId];
                 bot.sendMessage(chatId, "✅ Bank Details Updated!", { reply_markup: adminKeyboard }).catch(()=>{});
+            }
+            else if (state.step === 'awaiting_group_link') { // NEW
+                // We expect a URL like https://t.me/joinchat/... OR a public link
+                // But for broadcasting we need the ID. Let's ask for the ID here first, but store the LINK for the button.
+                // Wait, user asked for "Set Group Link". Let's assume they provide the URL for the button.
+                // And we need another command to set the Chat ID for broadcasting.
+                // Let's simplify: User inputs Chat ID first to enable broadcast.
+                // The prompt says "link to your Telegram group". 
+                // Let's store whatever they send as 'group_chat_id' for broadcast if it starts with -, else store as 'group_link' for button.
+                
+                if (text.startsWith("-")) {
+                    await db.query("INSERT INTO system_settings (key, value) VALUES ('group_chat_id', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text.trim()]);
+                    bot.sendMessage(chatId, "✅ Group Chat ID Set! (Used for broadcasting announcements)", { reply_markup: adminKeyboard });
+                } else if (text.startsWith("http") || text.startsWith("t.me")) {
+                     await db.query("INSERT INTO system_settings (key, value) VALUES ('group_link', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text.trim()]);
+                     bot.sendMessage(chatId, "✅ Group Link Set! (Used for Join Group button)", { reply_markup: adminKeyboard });
+                } else {
+                     bot.sendMessage(chatId, "❌ Invalid. Send a numeric ID (starts with -) for broadcasting OR a Link (starts with https) for the button.");
+                     return; // Keep state
+                }
+                delete chatStates[chatId];
             }
             else if (state.step === 'awaiting_add_username') { state.username = text.trim(); state.step = 'awaiting_add_amount'; bot.sendMessage(chatId, "Amount:").catch(()=>{}); }
             else if (state.step === 'awaiting_add_amount') { 
