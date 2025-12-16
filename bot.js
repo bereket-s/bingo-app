@@ -55,11 +55,12 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "🚀 Play / ይጫወቱ" }, { text: "🆕 New Game / አዲስ ጨዋታ" }],
           [{ text: "📝 Register / መዝግብ" }, { text: "📝 Bulk Register / በጅምላ" }],
           [{ text: "📜 Players / ተጫዋቾች" }, { text: "🗑️ Delete User / አስወግድ" }],
-          [{ text: "🏦 Set Bank / ባንክ አስገባ" }, { text: "📢 Set Group Link" }], // NEW
+          [{ text: "🏦 Set Bank / ባንክ አስገባ" }, { text: "📢 Set Group Link" }], 
           [{ text: "➕ Add Points" }, { text: "➖ Remove Points" }],
           [{ text: "➕ Bulk Add" }, { text: "🔄 Reset" }],
           [{ text: "📊 Daily Stats" }, { text: "📋 Transactions" }],
-          [{ text: "📈 Global Stats" }, { text: "⚠️ Reset All Points" }]
+          [{ text: "📈 Global Stats" }, { text: "⚠️ Reset All Points" }],
+          [{ text: "🔧 SMS Tools" }] 
       ],
       resize_keyboard: true,
       persistent: true
@@ -79,7 +80,7 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "🚀 Play Bingo / ጨዋታውን ጀምር" }],
           [{ text: "💰 My Points / ነጥቦቼ" }, { text: "🏦 Deposit / ገቢ አድርግ" }],
           [{ text: "💸 Transfer / አስተላልፍ" }, { text: "🏧 Withdraw / ወጪ አድርግ" }],
-          [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "ℹ️ Guide / መመሪያ" }], // UPDATED
+          [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "ℹ️ Guide / መመሪያ" }], 
           [{ text: "🌟 Buy Premium / ፕሪሚየም ይግዙ" }, { text: "🆘 Help / እርዳታ" }]
       ],
       resize_keyboard: true,
@@ -115,9 +116,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       // Announce Winner to Group
       const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
       const groupLink = groupRes.rows[0]?.value; 
-      // Note: We need a Chat ID (e.g., -100xxxxx) to send messages, but user provides a Link. 
-      // For simplicity, we only broadcast to admins here. 
-      // If 'group_chat_id' stores the numeric ID, we can use it:
       if (groupLink && groupLink.startsWith('-100')) {
           bot.sendMessage(groupLink, `🏁 *GAME #${displayId} FINISHED!*\n🏆 Winner: ${safeWinner}`, { parse_mode: "Markdown" }).catch(()=>{});
       }
@@ -188,10 +186,11 @@ const startBot = (database, socketIo, startGameLogic) => {
             }
         };
         
+        // --- NEW WELCOME MESSAGE ---
         const msg = `👋 **Welcome ${user.username}! / እንኳን ደህና መጡ!**\n\n` + 
-                    `To play, click the button below:\n` + 
-                    `ጨዋታውን ለመጀመር ይህንን ይጫኑ:\n\n` + 
-                    `👇👇👇`;
+                    `🎰 **Ready to Play? / ለመጫወት ዝግጁ ኖት?**\n\n` +
+                    `👇 **Click below to open the game:**\n` + 
+                    `👇 **ጨዋታውን ለመክፈት ይህንን ይጫኑ:**`;
         
         bot.sendMessage(chatId, msg, options).catch(e => console.error("Msg Error:", e.message));
       } catch(e) { console.error("Start Error", e); }
@@ -210,12 +209,14 @@ const startBot = (database, socketIo, startGameLogic) => {
         try {
             const user = await getUser(tgId);
             if (!user) {
-                const welcomeMsg = `👋 **Welcome / እንኳን ደህና መጡ!**\n\n` +
-                                   `To play Bingo, we need to register you.\n` +
-                                   `ቢንጎ ለመጫወት መመዝገብ ያስፈልጋል።\n\n` +
-                                   `👇 **Press the button below:**\n` +
-                                   `👇 **ከታች ያለውን ቁልፍ ይጫኑ:**`;
-                bot.sendMessage(chatId, welcomeMsg, { reply_markup: shareContactKeyboard }).catch(()=>{});
+                // --- NEW REGISTRATION WELCOME ---
+                const welcomeMsg = `👋 **Welcome to BingoBot! / እንኳን ወደ ቢንጎ ቦት በደህና መጡ!**\n\n` +
+                                   `🎮 **The Best Bingo Game! / ምርጡ የቢንጎ ጨዋታ!**\n` +
+                                   `Play, Win, and Have Fun! / ይጫወቱ፣ ያሸንፉ እና ይዝናኑ!\n\n` +
+                                   `🚀 **To Start / ለመጀመር:**\n` +
+                                   `Please press the button below to register.\n` +
+                                   `እባክዎ ለመመዝገብ ከታች ያለውን ቁልፍ ይጫኑ።`;
+                bot.sendMessage(chatId, welcomeMsg, { reply_markup: shareContactKeyboard, parse_mode: "Markdown" }).catch(()=>{});
             } else {
                 bot.sendMessage(chatId, `Welcome back, ${user.username}!`, { reply_markup: userKeyboard }).catch(()=>{});
             }
@@ -520,7 +521,7 @@ const startBot = (database, socketIo, startGameLogic) => {
     
     if (!text) return;
 
-    const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ Guide", "🗑️ Delete User"];
+    const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ Guide", "🗑️ Delete User", "🔧 SMS Tools"];
     if (mainMenuButtons.some(btn => text.startsWith(btn))) {
         if (chatStates[chatId]) delete chatStates[chatId];
     }
@@ -709,7 +710,7 @@ const startBot = (database, socketIo, startGameLogic) => {
              chatStates[chatId] = { step: 'awaiting_bank_update' };
              return bot.sendMessage(chatId, "Enter new Bank Details:").catch(()=>{});
         }
-        if (text.startsWith("📢 Set Group Link")) { // NEW
+        if (text.startsWith("📢 Set Group Link")) { 
              chatStates[chatId] = { step: 'awaiting_group_link' };
              return bot.sendMessage(chatId, "📢 **Set Group ID/Link**\n\nEnter the Group ID (e.g., -1001234567890) where game alerts should be sent:\n\n*Tip: Add the bot to the group as Admin first, then send any message in the group to get the ID.*", { parse_mode: "Markdown" }).catch(()=>{});
         }
@@ -732,6 +733,18 @@ const startBot = (database, socketIo, startGameLogic) => {
         if (text.startsWith("⚠️ Reset All Points")) {
             chatStates[chatId] = { step: 'awaiting_reset_confirm' };
             return bot.sendMessage(chatId, "⚠️ **DANGER ZONE** ⚠️\n\nThis will set ALL players' points to 0.\nAre you sure?\n\nType **CONFIRM** to proceed.", { parse_mode: "Markdown" });
+        }
+        if (text.startsWith("🔧 SMS Tools")) {
+            const smsHelp = `🔧 **Free SMS Forwarding Tools**\n\n` +
+                            `1. **SmsForwarder (Open Source)**\n` +
+                            `[Download from GitHub](https://github.com/pppscn/SmsForwarder/releases)\n` +
+                            `*Recommended: Unlimited, Free*\n\n` +
+                            `2. **SMS Forwarder (GilApps)**\n` +
+                            `[Play Store Link](https://play.google.com/store/apps/details?id=com.gawk.smsforwarder)\n` +
+                            `*Simple but has limits*\n\n` +
+                            `🔗 **Your Webhook URL:**\n` +
+                            `\`${publicUrl}/api/sms-webhook\``;
+            return bot.sendMessage(chatId, smsHelp, { parse_mode: "Markdown", disable_web_page_preview: true });
         }
         if (text.startsWith("📜 Players")) {
              try {
