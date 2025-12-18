@@ -1,9 +1,13 @@
 const db = require('./db');
 
 let gameEndCallback = null;
+let gameStartCallback = null; // New Callback
 
 function setGameEndCallback(callback) {
     gameEndCallback = callback;
+}
+function setGameStartCallback(callback) {
+    gameStartCallback = callback;
 }
 
 function mulberry32(a) {
@@ -163,10 +167,11 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
 }
 
 async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
-    const gameInfo = await db.query("SELECT winning_pattern, daily_id FROM games WHERE id = $1", [gameId]);
+    const gameInfo = await db.query("SELECT winning_pattern, daily_id, pot FROM games WHERE id = $1", [gameId]);
     if (gameInfo.rows.length === 0) return;
     const pattern = gameInfo.rows[0].winning_pattern;
     const dailyId = gameInfo.rows[0].daily_id;
+    const finalPrize = gameInfo.rows[0].pot; // This was set in bot.js as 70% or custom
     
     if (delaySeconds > 0) {
         io.to(`game_${gameId}`).emit('gameCountdown', { seconds: delaySeconds });
@@ -193,7 +198,10 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
             const game = { calledNumbers: new Set(), lastCalledNumber: null, io: io, intervalId: null, pattern, winners: new Set(), isEnding: false, cards: gameCards, dailyId, hasProcessedEnd: false };
             activeGames.set(gameId, game);
             
-            io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'active', gameId, displayId: dailyId, pattern });
+            // Broadcast start
+            if (gameStartCallback) gameStartCallback(gameId, dailyId, finalPrize, pattern);
+
+            io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'active', gameId, displayId: dailyId, pattern, pot: finalPrize });
             console.log(`🚀 Game ${gameId} Started. Rule: ${pattern}`);
 
             game.intervalId = setInterval(async () => {
@@ -306,6 +314,9 @@ async function processGameEnd(gameId, io, game) {
             
             io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'finished', gameId, displayId: game.dailyId, winner: winnerText, pot: pot });
             namesRes.rows.forEach(u => notifyUser(io, u.id, u.points, `🏆 WIN! +${splitPrize}`, true));
+            
+            if (gameEndCallback) gameEndCallback(gameId, winnerText, game.dailyId);
+
         } else {
              // 0 Winners
             if (gameEndCallback) gameEndCallback(gameId, "No Winner", game.dailyId);
@@ -557,4 +568,4 @@ function initializeSocketListeners(io) {
   });
 }
 
-module.exports = { initializeSocketListeners, startGameLogic, getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback };
+module.exports = { initializeSocketListeners, startGameLogic, getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback };

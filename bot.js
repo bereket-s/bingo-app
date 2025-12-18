@@ -1,5 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback } = require('./gameManager'); 
+const { getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback } = require('./gameManager'); 
 const db = require('./db'); 
 const dayjs = require('dayjs');
 
@@ -102,23 +102,42 @@ const startBot = (database, socketIo, startGameLogic) => {
       ]
   };
 
-  // --- GAME END CALLBACK ---
+  // --- NEW: BROADCAST HELPER ---
+  const broadcastToGroup = async (text, options = {}) => {
+      try {
+          const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
+          const groupLink = groupRes.rows[0]?.value; 
+          // Group ID usually starts with -100
+          if (groupLink && groupLink.startsWith('-')) {
+             await bot.sendMessage(groupLink, text, { parse_mode: "Markdown", ...options });
+          }
+      } catch(e) { console.error("Broadcast Error:", e); }
+  };
+
+  // --- NEW: GAME EVENT CALLBACKS ---
+  
+  // 1. Game Start Announcement
+  setGameStartCallback(async (gameId, dailyId, prize, pattern) => {
+      const inviteLink = `https://t.me/${botUsername}?start=bingo`;
+      const msg = `🎮 *GAME #${dailyId} STARTED!* / *ጨዋታ ተጀምሯል!*\n\n` +
+                  `💰 Prize: *${prize}*\n` +
+                  `📜 Rule: *${pattern.replace('_', ' ').toUpperCase()}*\n\n` +
+                  `🚀 Good Luck! / መልካም ዕድል!\n\n` +
+                  `👇 Join Next Game:\n${inviteLink}`;
+      
+      broadcastToGroup(msg);
+  });
+
+  // 2. Game End Announcement
   setGameEndCallback(async (gameId, winnerText, dailyId) => {
       const safeWinner = escapeMarkdown(winnerText);
       const displayId = dailyId || gameId;
       const msg = `🏁 *GAME #${displayId} FINISHED!* / *ጨዋታ #${displayId} ተጠናቀቀ!*\n\n` +
                   `🏆 Winner: ${safeWinner}\n` +
-                  `🏆 አሸናፊ: ${safeWinner}\n\n` +
-                  `👇 *Admin Menu Restored:*`;
+                  `🏆 አሸናፊ: ${safeWinner}\n\n`;
       
       broadcastToAdmins(msg, { parse_mode: "Markdown" });
-
-      // Announce Winner to Group
-      const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
-      const groupLink = groupRes.rows[0]?.value; 
-      if (groupLink && groupLink.startsWith('-100')) {
-          bot.sendMessage(groupLink, `🏁 *GAME #${displayId} FINISHED!*\n🏆 Winner: ${safeWinner}`, { parse_mode: "Markdown" }).catch(()=>{});
-      }
+      broadcastToGroup(msg);
   });
 
   // --- HELPERS ---
@@ -186,7 +205,6 @@ const startBot = (database, socketIo, startGameLogic) => {
             }
         };
         
-        // --- NEW WELCOME MESSAGE ---
         const msg = `👋 **Welcome ${user.username}! / እንኳን ደህና መጡ!**\n\n` + 
                     `🎰 **Ready to Play? / ለመጫወት ዝግጁ ኖት?**\n\n` +
                     `👇 **Click below to open the game:**\n` + 
@@ -209,7 +227,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         try {
             const user = await getUser(tgId);
             if (!user) {
-                // --- NEW REGISTRATION WELCOME ---
                 const welcomeMsg = `👋 **Welcome to BingoBot! / እንኳን ወደ ቢንጎ ቦት በደህና መጡ!**\n\n` +
                                    `🎮 **The Best Bingo Game! / ምርጡ የቢንጎ ጨዋታ!**\n` +
                                    `Play, Win, and Have Fun! / ይጫወቱ፣ ያሸንፉ እና ይዝናኑ!\n\n` +
@@ -218,7 +235,16 @@ const startBot = (database, socketIo, startGameLogic) => {
                                    `እባክዎ ለመመዝገብ ከታች ያለውን ቁልፍ ይጫኑ።`;
                 bot.sendMessage(chatId, welcomeMsg, { reply_markup: shareContactKeyboard, parse_mode: "Markdown" }).catch(()=>{});
             } else {
-                bot.sendMessage(chatId, `Welcome back, ${user.username}!`, { reply_markup: userKeyboard }).catch(()=>{});
+                // NEW: JOIN GROUP BUTTON
+                const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
+                const groupUrl = groupRes.rows[0]?.value;
+                const opts = { reply_markup: userKeyboard, parse_mode: "Markdown" };
+                
+                bot.sendMessage(chatId, `Welcome back, ${user.username}!`, opts).catch(()=>{});
+                
+                if (groupUrl) {
+                    bot.sendMessage(chatId, `📢 **Join our Group!**`, { reply_markup: { inline_keyboard: [[{ text: "📢 Join Group", url: groupUrl }]] } });
+                }
             }
         } catch (err) { console.error(err); }
     }
@@ -310,11 +336,17 @@ const startBot = (database, socketIo, startGameLogic) => {
             if (result.error) {
                  bot.sendMessage(chatId, `❌ **Error:** ${result.error}`, { reply_markup: userKeyboard });
             } else {
+                 // JOIN GROUP BUTTON
+                 const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
+                 const groupUrl = groupRes.rows[0]?.value;
+                 const opts = { parse_mode: "Markdown" };
+                 if (groupUrl) opts.reply_markup = { inline_keyboard: [[{ text: "📢 Join Group", url: groupUrl }]] };
+
                  if (await isAdmin(tgId) || await isSuperAdmin(tgId)) {
                      const kb = (await isSuperAdmin(tgId)) ? superAdminKeyboard : adminKeyboard;
-                     bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nRegistered as: ${result.user.username}`, { reply_markup: kb, parse_mode: "Markdown" }).catch(()=>{});
+                     bot.sendMessage(chatId, `✅ **Admin Account Linked!**\nRegistered as: ${result.user.username}`, { ...opts, reply_markup: kb });
                  } else {
-                     bot.sendMessage(chatId, `✅ **Welcome back, ${result.user.username}!**`, { reply_markup: userKeyboard, parse_mode: "Markdown" }).catch(()=>{});
+                     bot.sendMessage(chatId, `✅ **Welcome back, ${result.user.username}!**`, { ...opts, reply_markup: userKeyboard });
                  }
                  triggerStart(chatId, result.user);
             }
@@ -559,7 +591,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    // --- DEPOSIT FLOW (HYBRID) ---
     if (text.startsWith("🏦 Deposit")) {
         if(!user) return;
         const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
@@ -589,7 +620,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    // --- UPDATED: GUIDE / HELP ---
     if (text.startsWith("ℹ️ Guide") || text.startsWith("🆘 Help")) {
         const guideMsg = `ℹ️ **BINGO BOT USER GUIDE / የተጠቃሚ መመሪያ**\n\n` +
                          `🚀 **Play / ይጫወቱ:**\n` +
@@ -658,7 +688,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const userCountRes = await db.query("SELECT COUNT(*) as count FROM users");
                 const totalUsers = userCountRes.rows[0].count;
                 
-                // NEW PROFIT CALCULATION
+                // PROFIT CALCULATION
                 const payoutRes = await db.query("SELECT COALESCE(SUM(pot), 0) as total_payouts, COUNT(*) as count FROM games WHERE status = 'finished'");
                 const totalGames = payoutRes.rows[0].count;
                 const totalPayouts = parseInt(payoutRes.rows[0].total_payouts);
@@ -712,7 +742,7 @@ const startBot = (database, socketIo, startGameLogic) => {
         }
         if (text.startsWith("📢 Set Group Link")) { 
              chatStates[chatId] = { step: 'awaiting_group_link' };
-             return bot.sendMessage(chatId, "📢 **Set Group ID/Link**\n\nEnter the Group ID (e.g., -1001234567890) where game alerts should be sent:\n\n*Tip: Add the bot to the group as Admin first, then send any message in the group to get the ID.*", { parse_mode: "Markdown" }).catch(()=>{});
+             return bot.sendMessage(chatId, "📢 **Set Group ID & Link**\n\n1. Add the bot to your group as Admin.\n2. Send the **Group ID** (starts with -100...) here.\n3. Then I will ask for the Invite Link.", { parse_mode: "Markdown" }).catch(()=>{});
         }
         if (text.startsWith("➕ Add Points")) {
             chatStates[chatId] = { step: 'awaiting_add_username' };
@@ -757,7 +787,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                  let currentChunk = msg;
 
                  res.rows.forEach((u, i) => {
-                     // NO ESCAPING HERE - Sending plain text
                      const line = `${i+1}. ${u.username} (${u.phone_number || 'No Phone'}): ${u.points}\n`;
                      if ((currentChunk + line).length > 4000) {
                          chunks.push(currentChunk);
@@ -769,7 +798,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                  chunks.push(currentChunk);
 
                  for (const chunk of chunks) {
-                     // NO PARSE_MODE - Safe sending
                      await bot.sendMessage(chatId, chunk).catch((e)=>{ console.error("Player List Send Error:", e); });
                  }
              } catch(e) { console.error(e); }
@@ -790,7 +818,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 res.rows.forEach(t => {
                     const date = dayjs(t.created_at).format('MM/DD HH:mm');
                     let desc = t.description || 'N/A';
-                    // FIX: Escape Markdown characters
                     const safeUser = escapeMarkdown(t.user_name || 'Unknown');
                     const safeType = escapeMarkdown(t.type);
                     const safeDesc = escapeMarkdown(desc);
@@ -974,11 +1001,9 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const gameId = res.rows[0].id;
                 io.emit('gameStateUpdate', { status: 'pending', gameId, displayId: dailyId, betAmount: betAmount, pot: 0, calledNumbers: [], pattern });
                 
-                // --- NEW: ANNOUNCE TO GROUP ---
+                // ANNOUNCE TO GROUP (INVITE)
                 const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
-                const groupLinkRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
                 const groupChatId = groupRes.rows[0]?.value;
-                const groupUrl = groupLinkRes.rows[0]?.value;
                 const inviteLink = `https://t.me/${botUsername}?start=bingo`;
                 
                 const inviteMsg = `📢 **Bingo Game #${dailyId} Open!**\n\n` +
@@ -986,7 +1011,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                                   `Rule: ${pattern.replace('_', ' ').toUpperCase()}\n\n` +
                                   `👇 **Click here to Join:**\n${inviteLink}`;
                 
-                if (groupChatId) {
+                if (groupChatId && groupChatId.startsWith('-')) {
                     bot.sendMessage(groupChatId, inviteMsg, { parse_mode: "Markdown" }).catch(e => console.error("Group Send Error:", e.message));
                 }
 
@@ -994,39 +1019,33 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const kb = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `gm_refresh_${gameId}` }], [{ text: "▶️ START", callback_data: `gm_pre_${gameId}` }], [{ text: "🛑 Abort", callback_data: `gm_abort_${gameId}` }]] };
                 
                 bot.sendMessage(chatId, dashMsg, { parse_mode: "Markdown", reply_markup: kb }).catch(()=>{});
-                
-                // Also send forwarding message to admin
-                setTimeout(() => {
-                    bot.sendMessage(chatId, inviteMsg, { parse_mode: "Markdown" }).catch(()=>{});
-                }, 500); 
-
                 delete chatStates[chatId]; 
             }
+            
+            // --- NEW: HANDLE GROUP LINK SETTING ---
+            else if (state.step === 'awaiting_group_link') { 
+                if (text.startsWith("-")) {
+                    await db.query("INSERT INTO system_settings (key, value) VALUES ('group_chat_id', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text.trim()]);
+                    state.step = 'awaiting_group_url';
+                    bot.sendMessage(chatId, "✅ Group ID Set!\n\nNow send the **Invite Link** (https://t.me/...) for the join button:");
+                } else {
+                     bot.sendMessage(chatId, "❌ Invalid ID. It must start with - (e.g. -100123456). Try again:");
+                }
+            }
+            else if (state.step === 'awaiting_group_url') {
+                if (text.startsWith("http") || text.startsWith("t.me")) {
+                     await db.query("INSERT INTO system_settings (key, value) VALUES ('group_link', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text.trim()]);
+                     bot.sendMessage(chatId, "✅ Group Link Set! Full configuration complete.", { reply_markup: adminKeyboard });
+                     delete chatStates[chatId];
+                } else {
+                     bot.sendMessage(chatId, "❌ Invalid Link. Must start with http or t.me.");
+                }
+            }
+            
             else if (state.step === 'awaiting_bank_update') {
                 await db.query("INSERT INTO system_settings (key, value) VALUES ('bank_details', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text]);
                 delete chatStates[chatId];
                 bot.sendMessage(chatId, "✅ Bank Details Updated!", { reply_markup: adminKeyboard }).catch(()=>{});
-            }
-            else if (state.step === 'awaiting_group_link') { // NEW
-                // We expect a URL like https://t.me/joinchat/... OR a public link
-                // But for broadcasting we need the ID. Let's ask for the ID here first, but store the LINK for the button.
-                // Wait, user asked for "Set Group Link". Let's assume they provide the URL for the button.
-                // And we need another command to set the Chat ID for broadcasting.
-                // Let's simplify: User inputs Chat ID first to enable broadcast.
-                // The prompt says "link to your Telegram group". 
-                // Let's store whatever they send as 'group_chat_id' for broadcast if it starts with -, else store as 'group_link' for button.
-                
-                if (text.startsWith("-")) {
-                    await db.query("INSERT INTO system_settings (key, value) VALUES ('group_chat_id', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text.trim()]);
-                    bot.sendMessage(chatId, "✅ Group Chat ID Set! (Used for broadcasting announcements)", { reply_markup: adminKeyboard });
-                } else if (text.startsWith("http") || text.startsWith("t.me")) {
-                     await db.query("INSERT INTO system_settings (key, value) VALUES ('group_link', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text.trim()]);
-                     bot.sendMessage(chatId, "✅ Group Link Set! (Used for Join Group button)", { reply_markup: adminKeyboard });
-                } else {
-                     bot.sendMessage(chatId, "❌ Invalid. Send a numeric ID (starts with -) for broadcasting OR a Link (starts with https) for the button.");
-                     return; // Keep state
-                }
-                delete chatStates[chatId];
             }
             else if (state.step === 'awaiting_add_username') { state.username = text.trim(); state.step = 'awaiting_add_amount'; bot.sendMessage(chatId, "Amount:").catch(()=>{}); }
             else if (state.step === 'awaiting_add_amount') { 
@@ -1078,7 +1097,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 bot.sendMessage(chatId, `✅ *Custom Prize set to ${amount}*\n\n⏱ Enter countdown seconds to START (e.g., 10):`, { parse_mode: "Markdown" }).catch(()=>{});
             }
             
-            // --- NEW: Handle Edit Name Input ---
             else if (state.step === 'awaiting_new_username') {
                 const newName = text.trim();
                 if (newName.length < 3) return bot.sendMessage(chatId, "❌ Username too short.");
@@ -1092,7 +1110,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 bot.sendMessage(chatId, `✅ Username changed to **${newName}**!`, { parse_mode: "Markdown", reply_markup: userKeyboard });
             }
 
-            // --- NEW: Handle Delete User Input ---
             else if (state.step === 'awaiting_delete_username') {
                 const targetUser = text.trim();
                 const uRes = await db.query("SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)", [targetUser]);
@@ -1101,25 +1118,20 @@ const startBot = (database, socketIo, startGameLogic) => {
                     bot.sendMessage(chatId, "❌ User not found.");
                 } else {
                     const uid = uRes.rows[0].id;
-                    // Delete dependencies first (cascade manually just in case)
                     await db.query("DELETE FROM player_cards WHERE user_id = $1", [uid]);
                     await db.query("DELETE FROM deposits WHERE user_id = $1", [uid]);
                     await db.query("DELETE FROM transactions WHERE user_id = $1 OR related_user_id = $1", [uid]);
                     await db.query("UPDATE games SET winner_id = NULL WHERE winner_id = $1", [uid]);
                     
-                    // Finally delete user
                     await db.query("DELETE FROM users WHERE id = $1", [uid]);
                     bot.sendMessage(chatId, `🗑️ **${uRes.rows[0].username}** has been permanently deleted.`, { parse_mode: "Markdown" });
                 }
                 delete chatStates[chatId];
             }
 
-            // --- NEW: Handle Reset All Points Input ---
             else if (state.step === 'awaiting_reset_confirm') {
                 if (text.toUpperCase() === 'CONFIRM') {
-                     // 1. Log transaction for safety (Resetting everyone is a big deal)
                      await db.query("INSERT INTO transactions (type, amount, description) VALUES ('system_reset', 0, 'RESET ALL POINTS BY ADMIN')");
-                     // 2. Set all points to 0 for ROLE = player (keep admins safe if you want, or just everyone)
                      await db.query("UPDATE users SET points = 0 WHERE role = 'player'");
                      bot.sendMessage(chatId, "✅ **RESET COMPLETE.** All players now have 0 points.", { parse_mode: "Markdown", reply_markup: adminKeyboard });
                 } else {

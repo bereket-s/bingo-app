@@ -20,7 +20,7 @@ const TRANSLATIONS = {
     save: "Save",
     hostMsg: "Host will start the game soon.",
     bet: "Bet",
-    prize: "Prize",
+    prize: "Est. Prize", // Changed from "Prize" to be accurate
     pattern: "Winning Pattern",
     myCards: "My Cards",
     reqCards: "Buy Cards",
@@ -65,7 +65,7 @@ const TRANSLATIONS = {
     save: "አስቀምጥ",
     hostMsg: "ጨዋታው በቅርቡ ይጀምራል",
     bet: "መወራረጃ",
-    prize: "ሽልማት",
+    prize: "ግምታዊ ሽልማት", // Changed
     pattern: "የአሸናፊነት ህግ",
     myCards: "የኔ ካርዶች",
     reqCards: "ካርድ ይግዙ",
@@ -164,7 +164,7 @@ function App() {
   
   const [audioEnabled, setAudioEnabled] = useState(false);
   const audioEnabledRef = useRef(false); 
-  const audioRef = useRef(new Audio()); // This is the MAIN audio player
+  const audioRef = useRef(new Audio()); 
   const audioQueue = useRef([]);
   const isPlaying = useRef(false);
 
@@ -174,17 +174,29 @@ function App() {
   useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
   useEffect(() => { langRef.current = lang; }, [lang]); 
 
+  // --- HARD RESET WHEN IDLE ---
+  // This ensures the game goes back to welcome screen properly
+  useEffect(() => {
+    if (gameState.status === 'idle') {
+      setMyCards([]);
+      setMarkedCells({});
+      setCardOptions([]);
+      setCardStates({});
+      setSelectedOption(null);
+      setCheckingCardId(null);
+      setCustomCardNum("");
+      setIsConfirming(false);
+      localStorage.removeItem(`bingo_marks_${gameState.gameId}`);
+    }
+  }, [gameState.status, gameState.gameId]);
+
   // --- FIX: UNLOCK MAIN AUDIO PLAYER ON FIRST TOUCH ---
   useEffect(() => {
       const unlockAudio = () => {
-          // We use audioRef.current to play the silent sound. 
-          // This "blesses" the main player so it works later.
           if (audioRef.current) {
             audioRef.current.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
             audioRef.current.play().catch(() => {});
           }
-          
-          // Remove listeners immediately
           window.removeEventListener('click', unlockAudio);
           window.removeEventListener('touchstart', unlockAudio);
       };
@@ -297,12 +309,10 @@ function App() {
       }
   }, [gameState.calledNumbers]); 
 
-  // --- FIX: TOGGLE USES MAIN PLAYER ---
   const toggleAudio = () => {
       const newState = !audioEnabled;
       setAudioEnabled(newState);
       if (newState) {
-          // Play on the MAIN ref to fix mobile issues
           audioRef.current.src = `/audio/${langRef.current}/voice_on.mp3`;
           audioRef.current.play().catch(e => console.log("Voice conf failed", e));
       }
@@ -357,14 +367,7 @@ function App() {
     socket.on("cardStatesUpdate", (updates) => setCardStates(prev => ({ ...prev, ...updates })));
     
     socket.on("gameStateUpdate", (data) => {
-      if (data.status === 'idle') {
-          setMyCards([]); setMarkedCells({}); setCardOptions([]); setCardStates({}); setSelectedOption(null); setCheckingCardId(null);
-          setGameState(prev => ({ ...prev, ...data, calledNumbers: [] }));
-          localStorage.removeItem(`bingo_marks_${gameState.gameId}`);
-      } 
-      else if (data.status === 'pending' && gameState.gameId !== data.gameId) { 
-          setMyCards([]); setMarkedCells({}); setCardOptions([]); setCardStates({}); setSelectedOption(null); setCheckingCardId(null); 
-      }
+      // Logic handled in useEffect above regarding resets
       setGameState(prev => ({ ...prev, ...data }));
       
       if (data.status === 'finished' && data.winner && !gameState.winner) {
@@ -451,7 +454,12 @@ function App() {
   const claimBingo = (cardId) => { if (!cardId || gameState.status !== 'active' || !auth) return; setCheckingCardId(cardId); socket.emit("claimBingo", { ...auth, gameId: gameState.gameId, cardId, markedCells: Array.from(markedCells[cardId] || new Set()) }); };
 
   if (!auth) return <div className="App login-screen"><h2>{t('invalid')}</h2></div>;
-  const estPrize = Math.floor(gameState.pot * 0.7);
+  
+  // LOGIC TO HIDE TOTAL POOL
+  // If active, pot IS the prize (set by admin). If pending, pot IS total pool (needs *0.7).
+  const displayPrize = gameState.status === 'active' || gameState.status === 'finished' 
+    ? gameState.pot 
+    : Math.floor(gameState.pot * 0.7);
 
   return (
     <div className="App">
@@ -497,16 +505,15 @@ function App() {
           {gameState.status === 'idle' && (
             <div className="idle-screen"><h2>{t('waiting')}</h2><div className="pulse-dot"></div><p className="hint">{!audioEnabled?t('hintOff'):t('hintOn')}</p></div>
           )}
-          {/* UPDATED: Show displayId instead of raw gameId */}
-          {gameState.status === 'finished' && <div className="winner">🎉 {t('winner')}: {gameState.winner} {t('won')} {gameState.pot} ! 🎉</div>}
+          
+          {gameState.status === 'finished' && <div className="winner">🎉 {t('winner')}: {gameState.winner} {t('won')} {displayPrize} ! 🎉</div>}
           
           {(gameState.status === 'pending' || gameState.status === 'active') && (
             <div className="game-status-bar">
                 <PatternDisplay pattern={gameState.pattern} t={t} />
                 <div className="prize-box">
-                    {/* SHOW DISPLAY ID (GAME #1) NOT RAW ID */}
                     <span className="lbl">{t('gameId')} {gameState.displayId || gameState.gameId}</span>
-                    <span className="val">{gameState.pot > 0 ? gameState.pot : estPrize}</span>
+                    <span className="val">{displayPrize}</span>
                 </div>
             </div>
           )}
