@@ -1,7 +1,7 @@
 const db = require('./db');
 
 let gameEndCallback = null;
-let gameStartCallback = null; // New Callback
+let gameStartCallback = null;
 
 function setGameEndCallback(callback) {
     gameEndCallback = callback;
@@ -10,6 +10,7 @@ function setGameStartCallback(callback) {
     gameStartCallback = callback;
 }
 
+// Seeded random number generator for consistent card generation
 function mulberry32(a) {
     return function() {
       var t = a += 0x6D2B79F5;
@@ -53,6 +54,7 @@ const pendingCardStates = new Map();
 const MAX_CARDS_PER_PLAYER = 5;
 const CALL_DELAY_MS = 6000; 
 
+// Routine to refund players if the server crashed while a game was active
 async function cleanupStaleGames() {
     try {
         const stuckGames = await db.query("SELECT id, bet_amount, status FROM games WHERE status IN ('active', 'pending')");
@@ -72,38 +74,72 @@ async function cleanupStaleGames() {
 cleanupStaleGames();
 
 function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCalledNumber) {
+    // 1. Verify all marked numbers were actually called
     for (const numStr of markedCells) {
-        if (numStr !== 'FREE' && !calledNumbersSet.has(numStr)) return { valid: false, message: `Invalid! ${numStr} not called.` };
+        if (numStr !== 'FREE' && !calledNumbersSet.has(numStr)) {
+            return { valid: false, message: `Invalid! ${numStr} not called.` };
+        }
     }
-    const lastCalledStr = String(lastCalledNumber);
-    if (lastCalledNumber && !markedCells.has(lastCalledStr)) return { valid: false, message: "Must bingo on the LAST called number!" };
-
-    const isMarked = (r, c) => { const val = cardData[r][c]; return String(val) === 'FREE' || markedCells.has(String(val)); };
     
+    // 2. Verify the last called number is involved in the win (unless logic bypassed)
+    const lastCalledStr = String(lastCalledNumber);
+    if (lastCalledNumber && !markedCells.has(lastCalledStr)) {
+        return { valid: false, message: "Must bingo on the LAST called number!" };
+    }
+
+    const isMarked = (r, c) => { 
+        const val = cardData[r][c]; 
+        return String(val) === 'FREE' || markedCells.has(String(val)); 
+    };
+    
+    // Define Grid Coordinates
     const rows = [0,1,2,3,4].map(r => [0,1,2,3,4].map(c => [r,c]));
     const cols = [0,1,2,3,4].map(c => [0,1,2,3,4].map(r => [r,c]));
     const diag1 = [0,1,2,3,4].map(i => [i,i]);
     const diag2 = [0,1,2,3,4].map(i => [i, 4-i]);
-    
+    const corners = [[0,0], [0,4], [4,0], [4,4]]; 
+
     const checkSet = (coords) => {
         const allMarked = coords.every(([r,c]) => isMarked(r,c));
         if (!allMarked) return false;
+        // Optimization: If checking specifically for win condition, ensure last number is involved
         if (lastCalledNumber) return coords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr);
         return true; 
     };
 
+    const isFull = (coords) => coords.every(([r,c]) => isMarked(r,c));
+
     switch (pattern) {
-        case 'any_line': for(const line of [...rows, ...cols, diag1, diag2]) if(checkSet(line)) return { valid: true }; break;
-        case 'two_lines': 
-             let validLines = 0; let lastNumUsed = false;
-             for(const line of [...rows, ...cols, diag1, diag2]) {
-                 if (line.every(([r,c]) => isMarked(r,c))) {
-                     validLines++;
-                     if (line.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) lastNumUsed = true;
-                 }
+        case 'any_line': 
+            // Any Row, Col, Diagonal, OR Corners
+            for(const line of [...rows, ...cols, diag1, diag2]) {
+                if(checkSet(line)) return { valid: true };
             }
-            if (validLines >= 2 && (lastNumUsed || !lastCalledNumber)) return { valid: true };
+            if (checkSet(corners)) return { valid: true };
             break;
+
+        case 'two_lines': 
+             // Count how many "lines" are complete. 
+             // IMPORTANT: "Corners" counts as 1 line here per request.
+             let completedSets = 0;
+             let winningSetInvolvesLast = false;
+
+             // Combine all possible "lines" including corners
+             const allSets = [...rows, ...cols, diag1, diag2, corners];
+
+             for(const line of allSets) {
+                 if (isFull(line)) {
+                     completedSets++;
+                     if (lastCalledNumber && line.some(([r,c]) => String(cardData[r][c]) === lastCalledStr)) {
+                         winningSetInvolvesLast = true;
+                     }
+                 }
+             }
+
+             // Win if 2+ sets are complete AND the last number was part of at least one
+             if (completedSets >= 2 && (winningSetInvolvesLast || !lastCalledNumber)) return { valid: true };
+             break;
+
         case 'x_shape': 
              const xCoords = [...diag1, ...diag2];
              if (diag1.every(([r,c]) => isMarked(r,c)) && diag2.every(([r,c]) => isMarked(r,c))) {
@@ -119,7 +155,6 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
              }
              break;
         case 'corners': 
-             const corners = [[0,0], [0,4], [4,0], [4,4]];
              if (checkSet(corners)) return { valid: true };
              break;
         case 'plus_sign': 
@@ -171,7 +206,7 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
     if (gameInfo.rows.length === 0) return;
     const pattern = gameInfo.rows[0].winning_pattern;
     const dailyId = gameInfo.rows[0].daily_id;
-    const finalPrize = gameInfo.rows[0].pot; // This was set in bot.js as 70% or custom
+    const finalPrize = gameInfo.rows[0].pot; 
     
     if (delaySeconds > 0) {
         io.to(`game_${gameId}`).emit('gameCountdown', { seconds: delaySeconds });
@@ -285,7 +320,6 @@ async function processGameEnd(gameId, io, game) {
             // *** REFUND IF MORE THAN 3 WINNERS ***
             if (winnerCount > 3) {
                  await db.query("UPDATE games SET status = 'aborted' WHERE id = $1", [gameId]);
-                 // Refund everyone who bought a card
                  const players = await db.query("SELECT user_id FROM player_cards WHERE game_id = $1", [gameId]);
                  for (let p of players.rows) {
                      await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [bet_amount, p.user_id]);
@@ -297,10 +331,10 @@ async function processGameEnd(gameId, io, game) {
                  if (gameEndCallback) gameEndCallback(gameId, "Refunded (>3 Winners)", game.dailyId);
                  activeGames.delete(gameId);
                  setTimeout(() => { io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'idle' }); }, 10000);
-                 return; // Stop here
+                 return; 
             }
 
-            // Normal Payout (1-3 Winners)
+            // Normal Payout
             const splitPrize = Math.floor(pot / winnerCount);
             await db.query("UPDATE games SET status = 'finished', winner_id = $1 WHERE id = $2", [winnerIds[0], gameId]);
             

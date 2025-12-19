@@ -20,7 +20,7 @@ const TRANSLATIONS = {
     save: "Save",
     hostMsg: "Host will start the game soon.",
     bet: "Bet",
-    prize: "Est. Prize", // Changed from "Prize" to be accurate
+    prize: "Est. Prize", 
     pattern: "Winning Pattern",
     myCards: "My Cards",
     reqCards: "Buy Cards",
@@ -43,14 +43,11 @@ const TRANSLATIONS = {
     watching: "Watching...",
     cardNo: "Card #",
     gameClosed: "Game Closed",
-    p_any_line: "Any Line", p_two_lines: "Two Lines", p_x_shape: "X Shape",
+    p_any_line: "Any One Line or Corners", p_two_lines: "Two Lines (Corners=1 Line)", p_x_shape: "X Shape",
     p_l_shape: "L Shape", p_corners: "4 Corners", p_letter_h: "Letter H",
     p_letter_t: "Letter T", p_frame: "Frame", p_full_house: "Full House", 
     p_plus_sign: "Plus Sign", p_u_shape: "U Shape",
-    p_any_line_icon: "↔️↕️ Any Line",
-    buyPoints: "🛒 Buy Points",
-    payStripe: "💳 Card (Stripe)",
-    payBinance: "🔶 Crypto (Binance)"
+    buyPoints: "🛒 Buy Points"
   },
   am: {
     waiting: "አስተናጋጁ እስኪጀምር...",
@@ -65,7 +62,7 @@ const TRANSLATIONS = {
     save: "አስቀምጥ",
     hostMsg: "ጨዋታው በቅርቡ ይጀምራል",
     bet: "መወራረጃ",
-    prize: "ግምታዊ ሽልማት", // Changed
+    prize: "ግምታዊ ሽልማት",
     pattern: "የአሸናፊነት ህግ",
     myCards: "የኔ ካርዶች",
     reqCards: "ካርድ ይግዙ",
@@ -88,53 +85,77 @@ const TRANSLATIONS = {
     watching: "ጨዋታውን በመከታተል ላይ...",
     cardNo: "ካርድ #",
     gameClosed: "ጨዋታው ተዘግቷል",
-    p_any_line: "ማንኛውም መስመር", p_two_lines: "ሁለት መስመር", p_x_shape: "X ቅርጽ",
+    p_any_line: "ማንኛውም 1 መስመር (ወይም ኮርነር)", p_two_lines: "ሁለት መስመር (ኮርነር እንደ 1)", p_x_shape: "X ቅርጽ",
     p_l_shape: "L ቅርጽ", p_corners: "4ቱ ማዕዘን", p_letter_h: "H ቅርጽ",
     p_letter_t: "T ቅርጽ", p_frame: "ዙሪያውን/ሣጥን", p_full_house: "ፉል ሀውስ (ሙሉ)", 
     p_plus_sign: "Plus +", p_u_shape: "U Shape (Pyramid)",
-    p_any_line_icon: "↔️↕️ ማንኛውም",
-    buyPoints: "🛒 ነጥብ ይግዙ",
-    payStripe: "💳 ካርድ (Stripe)",
-    payBinance: "🔶 ክሪፕቶ (Binance)"
+    buyPoints: "🛒 ነጥብ ይግዙ"
   }
 };
 
 const getT = (lang) => (key) => TRANSLATIONS[lang][key] || TRANSLATIONS['en'][key] || key;
 
+// --- ANIMATED PATTERN DISPLAY COMPONENT ---
 const PatternDisplay = ({ pattern, t }) => {
-    const getGrid = (p) => {
+    const [frame, setFrame] = useState(0);
+
+    // Animation frames for different patterns
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setFrame(f => (f + 1) % 4); // Cycle 0,1,2,3
+        }, 800); // Speed of animation
+        return () => clearInterval(interval);
+    }, []);
+
+    const getGrid = (p, f) => {
         const g = Array(5).fill(null).map(() => Array(5).fill(false));
         const fill = (r,c) => { if(r>=0&&r<5&&c>=0&&c<5) g[r][c] = true; };
-        if (p === 'any_line') return null;
-        if (p === 'x_shape') { for(let i=0;i<5;i++) { fill(i,i); fill(i,4-i); } }
-        if (p === 'two_lines') { for(let c=0;c<5;c++) { fill(0,c); fill(1,c); } }
-        if (p === 'l_shape') { for(let r=0;r<5;r++) fill(r,0); for(let c=0;c<5;c++) fill(4,c); }
-        if (p === 'corners') { fill(0,0); fill(0,4); fill(4,0); fill(4,4); }
-        if (p === 'letter_h') { for(let r=0;r<5;r++){ fill(r,0); fill(r,4); } fill(2,1); fill(2,2); fill(2,3); }
-        if (p === 'letter_t') { for(let c=0;c<5;c++) fill(0,c); for(let r=0;r<5;r++) fill(r,2); }
-        if (p === 'frame') { for(let i=0;i<5;i++){ fill(0,i); fill(4,i); fill(i,0); fill(i,4); } }
-        if (p === 'plus_sign') { for(let i=0;i<5;i++) { fill(2,i); fill(i,2); } }
-        if (p === 'u_shape') { for(let i=0;i<5;i++) { fill(i,0); fill(i,4); } for(let c=0;c<5;c++) fill(4,c); }
-        if (p === 'full_house') { for(let r=0;r<5;r++) for(let c=0;c<5;c++) fill(r,c); }
+        
+        // --- ANIMATION LOGIC ---
+        if (p === 'any_line') {
+            // Frame 0: Horizontal, 1: Vertical, 2: Diagonal, 3: Corners
+            if (f === 0) for(let c=0; c<5; c++) fill(2, c); // Middle Row
+            if (f === 1) for(let r=0; r<5; r++) fill(r, 2); // Middle Col
+            if (f === 2) for(let i=0; i<5; i++) fill(i, i); // Diagonal
+            if (f === 3) { fill(0,0); fill(0,4); fill(4,0); fill(4,4); } // Corners
+        }
+        else if (p === 'x_shape') { for(let i=0;i<5;i++) { fill(i,i); fill(i,4-i); } }
+        else if (p === 'two_lines') { 
+            // Frame 0: Row 1+2
+            if (f % 4 === 0) { for(let c=0;c<5;c++) { fill(0,c); fill(1,c); } }
+            // Frame 1: Col 1+2
+            else if (f % 4 === 1) { for(let r=0;r<5;r++) { fill(r,0); fill(r,4); } }
+            // Frame 2: Diagonals
+            else if (f % 4 === 2) { for(let i=0;i<5;i++) { fill(i,i); fill(i,4-i); } }
+            // Frame 3: Row + Corners (Showing Corners as a valid "line")
+            else { for(let c=0;c<5;c++) fill(2,c); fill(0,0); fill(0,4); fill(4,0); fill(4,4); } 
+        }
+        else if (p === 'l_shape') { for(let r=0;r<5;r++) fill(r,0); for(let c=0;c<5;c++) fill(4,c); }
+        else if (p === 'corners') { 
+            // Blink the corners
+            if(f % 2 === 0) { fill(0,0); fill(0,4); fill(4,0); fill(4,4); }
+        }
+        else if (p === 'letter_h') { for(let r=0;r<5;r++){ fill(r,0); fill(r,4); } fill(2,1); fill(2,2); fill(2,3); }
+        else if (p === 'letter_t') { for(let c=0;c<5;c++) fill(0,c); for(let r=0;r<5;r++) fill(r,2); }
+        else if (p === 'frame') { for(let i=0;i<5;i++){ fill(0,i); fill(4,i); fill(i,0); fill(i,4); } }
+        else if (p === 'plus_sign') { for(let i=0;i<5;i++) { fill(2,i); fill(i,2); } }
+        else if (p === 'u_shape') { for(let i=0;i<5;i++) { fill(i,0); fill(i,4); } for(let c=0;c<5;c++) fill(4,c); }
+        else if (p === 'full_house') { for(let r=0;r<5;r++) for(let c=0;c<5;c++) fill(r,c); }
         return g;
     };
     
-    const grid = getGrid(pattern);
+    const grid = getGrid(pattern, frame);
     return (
         <div className="pattern-visual">
-            {pattern === 'any_line' ? (
-                <div className="any-line-icon">{t('p_any_line_icon')}</div>
-            ) : (
-                <div className="mini-grid">
-                    {grid && grid.map((row, r) => (
-                        <div key={r} className="mini-row">
-                            {row.map((active, c) => (
-                                <div key={c} className={`mini-cell ${active ? 'active' : ''}`} />
-                            ))}
-                        </div>
-                    ))}
-                </div>
-            )}
+            <div className="mini-grid">
+                {grid && grid.map((row, r) => (
+                    <div key={r} className="mini-row">
+                        {row.map((active, c) => (
+                            <div key={c} className={`mini-cell ${active ? 'active' : ''}`} />
+                        ))}
+                    </div>
+                ))}
+            </div>
             <div className="pattern-name">{t('p_' + pattern) || pattern.replace('_', ' ').toUpperCase()}</div>
         </div>
     );
@@ -175,7 +196,6 @@ function App() {
   useEffect(() => { langRef.current = lang; }, [lang]); 
 
   // --- HARD RESET WHEN IDLE ---
-  // This ensures the game goes back to welcome screen properly
   useEffect(() => {
     if (gameState.status === 'idle') {
       setMyCards([]);
@@ -367,7 +387,6 @@ function App() {
     socket.on("cardStatesUpdate", (updates) => setCardStates(prev => ({ ...prev, ...updates })));
     
     socket.on("gameStateUpdate", (data) => {
-      // Logic handled in useEffect above regarding resets
       setGameState(prev => ({ ...prev, ...data }));
       
       if (data.status === 'finished' && data.winner && !gameState.winner) {
@@ -455,8 +474,6 @@ function App() {
 
   if (!auth) return <div className="App login-screen"><h2>{t('invalid')}</h2></div>;
   
-  // LOGIC TO HIDE TOTAL POOL
-  // If active, pot IS the prize (set by admin). If pending, pot IS total pool (needs *0.7).
   const displayPrize = gameState.status === 'active' || gameState.status === 'finished' 
     ? gameState.pot 
     : Math.floor(gameState.pot * 0.7);
