@@ -43,7 +43,7 @@ const TRANSLATIONS = {
     watching: "Watching...",
     cardNo: "Card #",
     gameClosed: "Game Closed",
-    p_any_line: "Any One Line or Corners", p_two_lines: "Two Lines (Corners=1 Line)", p_x_shape: "X Shape",
+    p_any_line: "Any One Line (or Corners)", p_two_lines: "Two Lines (Corners = 1 Line)", p_x_shape: "X Shape",
     p_l_shape: "L Shape", p_corners: "4 Corners", p_letter_h: "Letter H",
     p_letter_t: "Letter T", p_frame: "Frame", p_full_house: "Full House", 
     p_plus_sign: "Plus Sign", p_u_shape: "U Shape",
@@ -95,15 +95,14 @@ const TRANSLATIONS = {
 
 const getT = (lang) => (key) => TRANSLATIONS[lang][key] || TRANSLATIONS['en'][key] || key;
 
-// --- ANIMATED PATTERN DISPLAY COMPONENT ---
 const PatternDisplay = ({ pattern, t }) => {
     const [frame, setFrame] = useState(0);
 
     // Animation frames for different patterns
     useEffect(() => {
         const interval = setInterval(() => {
-            setFrame(f => (f + 1) % 4); // Cycle 0,1,2,3
-        }, 800); // Speed of animation
+            setFrame(f => (f + 1) % 4); 
+        }, 800); 
         return () => clearInterval(interval);
     }, []);
 
@@ -111,30 +110,21 @@ const PatternDisplay = ({ pattern, t }) => {
         const g = Array(5).fill(null).map(() => Array(5).fill(false));
         const fill = (r,c) => { if(r>=0&&r<5&&c>=0&&c<5) g[r][c] = true; };
         
-        // --- ANIMATION LOGIC ---
         if (p === 'any_line') {
-            // Frame 0: Horizontal, 1: Vertical, 2: Diagonal, 3: Corners
-            if (f === 0) for(let c=0; c<5; c++) fill(2, c); // Middle Row
-            if (f === 1) for(let r=0; r<5; r++) fill(r, 2); // Middle Col
-            if (f === 2) for(let i=0; i<5; i++) fill(i, i); // Diagonal
-            if (f === 3) { fill(0,0); fill(0,4); fill(4,0); fill(4,4); } // Corners
+            if (f === 0) for(let c=0; c<5; c++) fill(2, c); 
+            if (f === 1) for(let r=0; r<5; r++) fill(r, 2); 
+            if (f === 2) for(let i=0; i<5; i++) fill(i, i); 
+            if (f === 3) { fill(0,0); fill(0,4); fill(4,0); fill(4,4); } 
         }
         else if (p === 'x_shape') { for(let i=0;i<5;i++) { fill(i,i); fill(i,4-i); } }
         else if (p === 'two_lines') { 
-            // Frame 0: Row 1+2
             if (f % 4 === 0) { for(let c=0;c<5;c++) { fill(0,c); fill(1,c); } }
-            // Frame 1: Col 1+2
             else if (f % 4 === 1) { for(let r=0;r<5;r++) { fill(r,0); fill(r,4); } }
-            // Frame 2: Diagonals
             else if (f % 4 === 2) { for(let i=0;i<5;i++) { fill(i,i); fill(i,4-i); } }
-            // Frame 3: Row + Corners (Showing Corners as a valid "line")
             else { for(let c=0;c<5;c++) fill(2,c); fill(0,0); fill(0,4); fill(4,0); fill(4,4); } 
         }
         else if (p === 'l_shape') { for(let r=0;r<5;r++) fill(r,0); for(let c=0;c<5;c++) fill(4,c); }
-        else if (p === 'corners') { 
-            // Blink the corners
-            if(f % 2 === 0) { fill(0,0); fill(0,4); fill(4,0); fill(4,4); }
-        }
+        else if (p === 'corners') { if(f % 2 === 0) { fill(0,0); fill(0,4); fill(4,0); fill(4,4); } }
         else if (p === 'letter_h') { for(let r=0;r<5;r++){ fill(r,0); fill(r,4); } fill(2,1); fill(2,2); fill(2,3); }
         else if (p === 'letter_t') { for(let c=0;c<5;c++) fill(0,c); for(let r=0;r<5;r++) fill(r,2); }
         else if (p === 'frame') { for(let i=0;i<5;i++){ fill(0,i); fill(4,i); fill(i,0); fill(i,4); } }
@@ -191,11 +181,10 @@ function App() {
 
   const t = getT(lang);
 
-  // Sync refs
   useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
   useEffect(() => { langRef.current = lang; }, [lang]); 
 
-  // --- HARD RESET WHEN IDLE ---
+  // --- HARD RESET ---
   useEffect(() => {
     if (gameState.status === 'idle') {
       setMyCards([]);
@@ -210,7 +199,7 @@ function App() {
     }
   }, [gameState.status, gameState.gameId]);
 
-  // --- FIX: UNLOCK MAIN AUDIO PLAYER ON FIRST TOUCH ---
+  // --- FIX: UNLOCK AUDIO ---
   useEffect(() => {
       const unlockAudio = () => {
           if (audioRef.current) {
@@ -244,7 +233,6 @@ function App() {
     if (window.confetti) window.confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
   };
 
-  // --- AUDIO SYSTEM ---
   const processAudioQueue = async () => {
       if (isPlaying.current || audioQueue.current.length === 0) return;
       isPlaying.current = true;
@@ -276,7 +264,6 @@ function App() {
       processAudioQueue();
   };
 
-  // --- LOCAL STORAGE ---
   useEffect(() => {
       if(gameState.gameId) {
           const savedMarks = localStorage.getItem(`bingo_marks_${gameState.gameId}`);
@@ -297,7 +284,6 @@ function App() {
       }
   }, [markedCells, gameState.gameId]);
 
-  // --- GAME LOOP LOGIC ---
   useEffect(() => { 
       if (gameState.calledNumbers.length > 0) {
           const lastNum = gameState.calledNumbers[gameState.calledNumbers.length - 1];
@@ -351,7 +337,6 @@ function App() {
       if(player.isPremium) socket.emit('updatePreferences', { ...prefs, [key]: newVal });
   };
 
-  // --- SOCKET INIT ---
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const userId = urlParams.get('user_id');
@@ -360,14 +345,12 @@ function App() {
     else if (window.location.search.includes('user_id')) { setErrorMsg(t('invalid')); }
   }, []); 
 
-  // --- VIEW CARD LOGIC ---
   useEffect(() => { 
       if (!auth || gameState.status !== 'pending') return;
       if (selectedOption) socket.emit('viewCard', { gameId: gameState.gameId, cardId: selectedOption.id, isViewing: true });
       return () => { if (selectedOption) socket.emit('viewCard', { gameId: gameState.gameId, cardId: selectedOption.id, isViewing: false }); };
   }, [selectedOption, auth, gameState.gameId, gameState.status]);
 
-  // --- SOCKET HANDLERS ---
   useEffect(() => {
     const handleReconnection = () => { if (auth) socket.emit("syncGameState", auth); };
 
@@ -387,6 +370,14 @@ function App() {
     socket.on("cardStatesUpdate", (updates) => setCardStates(prev => ({ ...prev, ...updates })));
     
     socket.on("gameStateUpdate", (data) => {
+      if (data.status === 'idle') {
+          setMyCards([]); setMarkedCells({}); setCardOptions([]); setCardStates({}); setSelectedOption(null); setCheckingCardId(null);
+          setGameState(prev => ({ ...prev, ...data, calledNumbers: [] }));
+          localStorage.removeItem(`bingo_marks_${gameState.gameId}`);
+      } 
+      else if (data.status === 'pending' && gameState.gameId !== data.gameId) { 
+          setMyCards([]); setMarkedCells({}); setCardOptions([]); setCardStates({}); setSelectedOption(null); setCheckingCardId(null); 
+      }
       setGameState(prev => ({ ...prev, ...data }));
       
       if (data.status === 'finished' && data.winner && !gameState.winner) {
@@ -449,7 +440,6 @@ function App() {
       }
   }, [countdown]);
 
-  // --- USER ACTIONS ---
   const requestJoin = () => auth && gameState.status === 'pending' && socket.emit("requestCards", { ...auth, gameId: gameState.gameId });
   const getSpecificCard = () => auth && gameState.status === 'pending' && customCardNum && socket.emit("requestSpecificCard", { ...auth, gameId: gameState.gameId, cardNumber: customCardNum });
   
@@ -473,10 +463,7 @@ function App() {
   const claimBingo = (cardId) => { if (!cardId || gameState.status !== 'active' || !auth) return; setCheckingCardId(cardId); socket.emit("claimBingo", { ...auth, gameId: gameState.gameId, cardId, markedCells: Array.from(markedCells[cardId] || new Set()) }); };
 
   if (!auth) return <div className="App login-screen"><h2>{t('invalid')}</h2></div>;
-  
-  const displayPrize = gameState.status === 'active' || gameState.status === 'finished' 
-    ? gameState.pot 
-    : Math.floor(gameState.pot * 0.7);
+  const estPrize = Math.floor(gameState.pot * 0.7);
 
   return (
     <div className="App">
@@ -522,15 +509,14 @@ function App() {
           {gameState.status === 'idle' && (
             <div className="idle-screen"><h2>{t('waiting')}</h2><div className="pulse-dot"></div><p className="hint">{!audioEnabled?t('hintOff'):t('hintOn')}</p></div>
           )}
-          
-          {gameState.status === 'finished' && <div className="winner">🎉 {t('winner')}: {gameState.winner} {t('won')} {displayPrize} ! 🎉</div>}
+          {gameState.status === 'finished' && <div className="winner">🎉 {t('winner')}: {gameState.winner} {t('won')} {gameState.pot} ! 🎉</div>}
           
           {(gameState.status === 'pending' || gameState.status === 'active') && (
             <div className="game-status-bar">
                 <PatternDisplay pattern={gameState.pattern} t={t} />
                 <div className="prize-box">
                     <span className="lbl">{t('gameId')} {gameState.displayId || gameState.gameId}</span>
-                    <span className="val">{displayPrize}</span>
+                    <span className="val">{gameState.pot > 0 ? gameState.pot : estPrize}</span>
                 </div>
             </div>
           )}
