@@ -98,7 +98,6 @@ const getT = (lang) => (key) => TRANSLATIONS[lang][key] || TRANSLATIONS['en'][ke
 const PatternDisplay = ({ pattern, t }) => {
     const [frame, setFrame] = useState(0);
 
-    // Animation frames for different patterns
     useEffect(() => {
         const interval = setInterval(() => {
             setFrame(f => (f + 1) % 4); 
@@ -184,7 +183,45 @@ function App() {
   useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
   useEffect(() => { langRef.current = lang; }, [lang]); 
 
-  // --- HARD RESET ---
+  // --- RESTORE MARKED CELLS ON REFRESH ---
+  // This effect runs when the gameID is set (after socket connection). 
+  // It checks local storage and merges it with current state to prevent data loss.
+  useEffect(() => {
+      if(gameState.gameId) {
+          const savedMarks = localStorage.getItem(`bingo_marks_${gameState.gameId}`);
+          if (savedMarks) {
+              const parsed = JSON.parse(savedMarks);
+              const restored = {};
+              // Convert arrays back to Sets for React state
+              Object.keys(parsed).forEach(key => restored[key] = new Set(parsed[key]));
+              
+              setMarkedCells(prev => {
+                  const combined = { ...prev };
+                  Object.keys(restored).forEach(key => {
+                      // If we already have marks (from socket), don't overwrite blindly, merge them
+                      if(combined[key]) {
+                          restored[key].forEach(val => combined[key].add(val));
+                      } else {
+                          combined[key] = restored[key];
+                      }
+                  });
+                  return combined;
+              });
+          }
+      }
+  }, [gameState.gameId]);
+
+  // --- SAVE MARKED CELLS ON CHANGE ---
+  useEffect(() => {
+      if(gameState.gameId && Object.keys(markedCells).length > 0) {
+          const serializable = {};
+          // Convert Sets to Arrays for JSON storage
+          Object.keys(markedCells).forEach(key => serializable[key] = Array.from(markedCells[key]));
+          localStorage.setItem(`bingo_marks_${gameState.gameId}`, JSON.stringify(serializable));
+      }
+  }, [markedCells, gameState.gameId]);
+
+  // --- HARD RESET ONLY ON IDLE ---
   useEffect(() => {
     if (gameState.status === 'idle') {
       setMyCards([]);
@@ -195,11 +232,11 @@ function App() {
       setCheckingCardId(null);
       setCustomCardNum("");
       setIsConfirming(false);
-      localStorage.removeItem(`bingo_marks_${gameState.gameId}`);
+      // Only clear storage when game is strictly IDLE
+      if(gameState.gameId) localStorage.removeItem(`bingo_marks_${gameState.gameId}`);
     }
   }, [gameState.status, gameState.gameId]);
 
-  // --- FIX: UNLOCK AUDIO ---
   useEffect(() => {
       const unlockAudio = () => {
           if (audioRef.current) {
@@ -209,10 +246,8 @@ function App() {
           window.removeEventListener('click', unlockAudio);
           window.removeEventListener('touchstart', unlockAudio);
       };
-      
       window.addEventListener('click', unlockAudio);
       window.addEventListener('touchstart', unlockAudio);
-      
       return () => {
           window.removeEventListener('click', unlockAudio);
           window.removeEventListener('touchstart', unlockAudio);
@@ -255,7 +290,6 @@ function App() {
 
   const queueAudio = (filenames) => {
       if (!audioEnabledRef.current) return; 
-      
       if (Array.isArray(filenames)) {
           audioQueue.current.push(...filenames);
       } else {
@@ -263,26 +297,6 @@ function App() {
       }
       processAudioQueue();
   };
-
-  useEffect(() => {
-      if(gameState.gameId) {
-          const savedMarks = localStorage.getItem(`bingo_marks_${gameState.gameId}`);
-          if (savedMarks) {
-              const parsed = JSON.parse(savedMarks);
-              const restored = {};
-              Object.keys(parsed).forEach(key => restored[key] = new Set(parsed[key]));
-              setMarkedCells(prev => ({...prev, ...restored}));
-          }
-      }
-  }, [gameState.gameId]);
-
-  useEffect(() => {
-      if(gameState.gameId && Object.keys(markedCells).length > 0) {
-          const serializable = {};
-          Object.keys(markedCells).forEach(key => serializable[key] = Array.from(markedCells[key]));
-          localStorage.setItem(`bingo_marks_${gameState.gameId}`, JSON.stringify(serializable));
-      }
-  }, [markedCells, gameState.gameId]);
 
   useEffect(() => { 
       if (gameState.calledNumbers.length > 0) {
@@ -293,7 +307,6 @@ function App() {
               setMarkedCells(prev => {
                   const newMarked = {...prev};
                   let changed = false;
-                  
                   myCards.forEach(card => {
                       const cardSet = new Set(newMarked[card.id] || ['FREE']);
                       gameState.calledNumbers.forEach(calledNum => {
@@ -370,14 +383,10 @@ function App() {
     socket.on("cardStatesUpdate", (updates) => setCardStates(prev => ({ ...prev, ...updates })));
     
     socket.on("gameStateUpdate", (data) => {
+      // Handle cleanup if moving to idle
       if (data.status === 'idle') {
-          setMyCards([]); setMarkedCells({}); setCardOptions([]); setCardStates({}); setSelectedOption(null); setCheckingCardId(null);
-          setGameState(prev => ({ ...prev, ...data, calledNumbers: [] }));
-          localStorage.removeItem(`bingo_marks_${gameState.gameId}`);
+          // Check if we actually need to clear - avoiding flickers
       } 
-      else if (data.status === 'pending' && gameState.gameId !== data.gameId) { 
-          setMyCards([]); setMarkedCells({}); setCardOptions([]); setCardStates({}); setSelectedOption(null); setCheckingCardId(null); 
-      }
       setGameState(prev => ({ ...prev, ...data }));
       
       if (data.status === 'finished' && data.winner && !gameState.winner) {
@@ -387,7 +396,7 @@ function App() {
       if (data.myCards) {
           setMyCards(data.myCards);
           setMarkedCells(prev => {
-              if (Object.keys(prev).length > 0) return prev;
+              if (Object.keys(prev).length > 0) return prev; // If local storage already loaded marks, don't overwrite
               const newMarked = {};
               data.myCards.forEach(card => { newMarked[card.id] = new Set(['FREE']); });
               return newMarked;
