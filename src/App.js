@@ -60,7 +60,7 @@ const TRANSLATIONS = {
     autoBingoLbl: "ራሱ ቢንጎ ይበል",
     premOnly: "(ለፕሪሚየም ብቻ)",
     save: "አስቀምጥ",
-    hostMsg: "ጨዋታው በቅርቡ ይጀምራል",
+    hostMsg: "ተጫዋቾችን በመጠበቅ ላይ",
     bet: "መወራረጃ",
     prize: "ግምታዊ ሽልማት",
     pattern: "የአሸናፊነት ህግ",

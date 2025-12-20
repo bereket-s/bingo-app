@@ -71,8 +71,8 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "➕ Add Points" }, { text: "➖ Remove Points" }],
           [{ text: "➕ Bulk Add" }, { text: "🔄 Reset" }],
           [{ text: "📊 Daily Stats" }, { text: "📋 Transactions" }],
-          [{ text: "📈 Global Stats" }, { text: "⚠️ Reset All Points" }],
-          [{ text: "🔧 SMS Tools" }] 
+          [{ text: "📈 Global Stats" }, { text: "📢 Broadcast Group Link" }], // NEW BUTTON ADDED HERE
+          [{ text: "⚠️ Reset All Points" }, { text: "🔧 SMS Tools" }] 
       ],
       resize_keyboard: true,
       persistent: true
@@ -119,7 +119,7 @@ const startBot = (database, socketIo, startGameLogic) => {
       try {
           const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
           const chatId = groupRes.rows[0]?.value; 
-          // Removed strict check - allows any valid saved ID to work
+          // Allows any valid saved ID to work (negative or positive)
           if (chatId) {
              await bot.sendMessage(chatId, text, { parse_mode: "Markdown", ...options });
           }
@@ -127,6 +127,8 @@ const startBot = (database, socketIo, startGameLogic) => {
   };
 
   // --- GAME EVENT CALLBACKS ---
+  
+  // 1. Game Start Announcement
   setGameStartCallback(async (gameId, dailyId, prize, pattern) => {
       const inviteLink = `https://t.me/${botUsername}?start=bingo`;
       const safePattern = String(pattern).replace(/_/g, ' ').toUpperCase(); 
@@ -138,6 +140,7 @@ const startBot = (database, socketIo, startGameLogic) => {
       broadcastToGroup(msg, opts);
   });
 
+  // 2. Game End Announcement
   setGameEndCallback(async (gameId, winnerText, dailyId) => {
       const safeWinner = escapeMarkdown(winnerText);
       const displayId = dailyId || gameId;
@@ -188,7 +191,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
   const triggerStart = async (chatId, user) => {
       if (!publicUrl) {
-          bot.sendMessage(chatId, "❌ **System Error:** PUBLIC_URL is missing.");
+          bot.sendMessage(chatId, "❌ **System Error:** PUBLIC_URL is missing in settings.");
           return;
       }
       try {
@@ -360,7 +363,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                      const newPot = Math.floor(totalCollected * 0.7);
                      await db.query("UPDATE games SET pot = $1 WHERE id = $2", [newPot, gameId]);
                      chatStates[chatId] = { step: 'awaiting_start_seconds', gameId: gameId, dailyId: game.daily_id };
-                     bot.sendMessage(chatId, `✅ *Prize set to ${newPot}*\n\n⏱ Enter countdown seconds to START (e.g., 10):`, {parse_mode: "Markdown"}).catch(()=>{});
+                     bot.sendMessage(chatId, `✅ *Prize set to ${newPot}*\n\n⏱ Enter countdown seconds:`, {parse_mode: "Markdown"}).catch(()=>{});
                  } else {
                      chatStates[chatId] = { step: 'awaiting_custom_prize', gameId: gameId, max: totalCollected, dailyId: game.daily_id };
                      bot.sendMessage(chatId, `✏️ *Enter Custom Prize:*`, {parse_mode: "Markdown"}).catch(()=>{});
@@ -387,7 +390,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             const targetId = parseInt(parts[2]); 
             const val = parts[3]; 
 
-            // -- DEPOSIT REJECTION WITH REASON --
+            // -- NEW: DEPOSIT REJECTION WITH REASON --
             if (type === 'dep' && decision === 'reject' && parts.length === 4) {
                 // Ask for reason using buttons
                 const kb = {
@@ -476,40 +479,12 @@ const startBot = (database, socketIo, startGameLogic) => {
     const text = msg.text;
     if (!text) return;
 
-    // --- NEW: JOIN NOTIFICATION COMMAND ---
-    if (text.startsWith('/broadcast_join')) {
+    // --- NEW: BROADCAST LINK BUTTON LOGIC ---
+    if (text === "📢 Broadcast Group Link" || text.startsWith('/broadcast_link')) {
         if (await isAdmin(msg.from.id)) {
             const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
             const url = groupRes.rows[0]?.value;
-            if(!url) return bot.sendMessage(chatId, "No group link set. Use 'Set Group Link' first.");
-            
-            const allUsers = await db.query("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL");
-            let count = 0;
-            bot.sendMessage(chatId, `📢 Broadcasting join link to ${allUsers.rows.length} users...`);
-            
-            // Broadcast loop
-            for(const u of allUsers.rows) {
-                try {
-                    await bot.sendMessage(u.telegram_id, "📢 **Join our Bingo Group!**\n\nDon't miss the next game!", { 
-                        parse_mode: "Markdown", 
-                        reply_markup: { inline_keyboard: [[{ text: "📢 JOIN NOW", url: url }]] } 
-                    });
-                    count++;
-                    // Basic rate limiting to prevent spam blocks
-                    await new Promise(r => setTimeout(r, 50)); 
-                } catch(e) {}
-            }
-            bot.sendMessage(chatId, `✅ Sent to ${count} users.`);
-        }
-        return;
-    }
-    
-    // --- NEW: BROADCAST LINK COMMAND ---
-    if (text.startsWith('/broadcast_link')) {
-        if (await isAdmin(msg.from.id)) {
-            const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
-            const url = groupRes.rows[0]?.value;
-            if(!url) return bot.sendMessage(chatId, "No group link set. Use 'Set Group Link' first.");
+            if(!url) return bot.sendMessage(chatId, "❌ No group link set. Use 'Set Group Link' first.");
             
             const allUsers = await db.query("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL");
             let count = 0;
@@ -632,6 +607,12 @@ const startBot = (database, socketIo, startGameLogic) => {
     // Check permissions for admin commands
     if (userIsAdmin) {
         if (text.startsWith("🆕 New Game")) {
+            // SINGLE PENDING GAME CHECK
+            const pendingGames = await db.query("SELECT id FROM games WHERE status = 'pending'");
+            if (pendingGames.rows.length > 0) {
+                return bot.sendMessage(chatId, `⚠️ **Game #${pendingGames.rows[0].id} is already pending!**\n\nYou must START or ABORT it before creating a new one.`, { parse_mode: "Markdown" });
+            }
+
             chatStates[chatId] = { step: 'awaiting_pattern' };
             const patternKeyboard = {
                 inline_keyboard: [
@@ -861,7 +842,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 if (result.error) {
                      bot.sendMessage(chatId, `❌ **Error:** ${result.error}\n\nTry /start again.`, { reply_markup: userKeyboard });
                 } else {
-                     // NEW: JOIN GROUP BUTTON
+                     // JOIN GROUP BUTTON
                      const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
                      const groupUrl = groupRes.rows[0]?.value;
                      const opts = { parse_mode: "Markdown" };
