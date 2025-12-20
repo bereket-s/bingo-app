@@ -7,10 +7,8 @@ let io;
 const chatStates = {};
 let botUsername = "BingoBot";
 
-// Helper to clean phone numbers
 const cleanPhone = (p) => p ? p.replace(/\D/g, '') : '';
 
-// Improved escaper for Legacy Markdown to prevent errors
 const escapeMarkdown = (text) => {
     if (!text) return '';
     return String(text).replace(/[_*[\]()`]/g, '\\$&');
@@ -20,7 +18,6 @@ const startBot = (database, socketIo, startGameLogic) => {
   io = socketIo;
 
   const token = process.env.TELEGRAM_TOKEN;
-  // Parse Admin IDs from .env
   const adminIds = (process.env.ADMIN_TELEGRAM_ID || '')
       .split(',')
       .map(id => parseInt(id.trim(), 10))
@@ -29,10 +26,7 @@ const startBot = (database, socketIo, startGameLogic) => {
   const superAdminId = adminIds.length > 0 ? adminIds[0] : null;
   const publicUrl = process.env.PUBLIC_URL;
 
-  // --- DATABASE HELPER FUNCTIONS FOR MESSAGE TRACKING ---
-  // These functions manage saving/retrieving message IDs to delete them later
   const saveMsgId = async (key, msgId) => {
-      // Stores message IDs (like last_join_msg, last_winner_msg) in system_settings table
       try {
           await db.query(
               "INSERT INTO system_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", 
@@ -55,7 +49,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       } catch (e) { return null; }
   };
 
-  // --- ROLE CHECKERS ---
   const isAdmin = async (id) => {
       if (adminIds.includes(id)) return true;
       const res = await db.query("SELECT role FROM users WHERE telegram_id = $1", [id]);
@@ -70,7 +63,6 @@ const startBot = (database, socketIo, startGameLogic) => {
 
   if (!token) return;
   
-  // Initialize Bot with Polling
   const bot = new TelegramBot(token, { 
       polling: {
           interval: 300,
@@ -79,7 +71,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       }
   });
 
-  // Prevent polling errors from crashing the app
   bot.on('polling_error', (error) => {
       if (['EFATAL','ECONNRESET','ETIMEDOUT'].includes(error.code)) return;
       console.error(`[Polling Error] ${error.code}: ${error.message}`);
@@ -90,7 +81,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       console.log(`🤖 Telegram Bot initialized: @${botUsername}`);
   });
 
-  // --- KEYBOARDS ---
   const adminKeyboard = {
       keyboard: [
           [{ text: "🚀 Play / ይጫወቱ" }, { text: "🆕 New Game / አዲስ ጨዋታ" }],
@@ -143,7 +133,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       ]
   };
 
-  // --- BROADCAST HELPER ---
   const broadcastToGroup = async (text, options = {}) => {
       try {
           const chatId = await getGroupId();
@@ -157,8 +146,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       }
   };
 
-  // --- GAME START CALLBACK ---
-  // Triggered when a new game is created/set by Admin
   setGameStartCallback(async (gameId, dailyId, prize, pattern) => {
       const inviteLink = `https://t.me/${botUsername}?start=bingo`;
       const safePattern = String(pattern).replace(/_/g, ' ').toUpperCase(); 
@@ -175,16 +162,14 @@ const startBot = (database, socketIo, startGameLogic) => {
           } 
       };
       
-      // 1. CLEANUP: Delete the "Winners List" from the PREVIOUS game/day
       try {
           const oldWinnerMsgId = await getMsgId('last_winner_msg_id');
           const chatId = await getGroupId();
           if (oldWinnerMsgId && chatId) {
-              await bot.deleteMessage(chatId, oldWinnerMsgId).catch(() => {}); // Ignore error if too old
+              await bot.deleteMessage(chatId, oldWinnerMsgId).catch(() => {});
           }
       } catch(e) {}
 
-      // 2. CLEANUP: Delete any stuck "Join" buttons from aborted games
       try {
           const oldJoinMsgId = await getMsgId('last_join_msg_id');
           const chatId = await getGroupId();
@@ -193,15 +178,10 @@ const startBot = (database, socketIo, startGameLogic) => {
           }
       } catch(e) {}
 
-      // 3. SEND: New Game Announcement
       const newMsgId = await broadcastToGroup(msg, opts);
-      
-      // 4. SAVE: Store ID to delete it when game ends
       if(newMsgId) await saveMsgId('last_join_msg_id', newMsgId);
   });
 
-  // --- GAME END CALLBACK ---
-  // Triggered when a game finishes
   setGameEndCallback(async (gameId, winnerText, dailyId) => {
       const safeWinner = escapeMarkdown(winnerText);
       const displayId = dailyId || gameId;
@@ -209,10 +189,8 @@ const startBot = (database, socketIo, startGameLogic) => {
                   `🏆 **WINNER / አሸናፊ:**\n${safeWinner}\n\n` +
                   `🎉 Congratulations! / እንኳን ደስ አለዎት!`;
       
-      // Notify Admins
       broadcastToAdmins(msg, { parse_mode: "Markdown" });
       
-      // 1. CLEANUP: Delete the "Join Game" button message (Game is over, link is invalid)
       try {
           const oldJoinMsgId = await getMsgId('last_join_msg_id');
           const chatId = await getGroupId();
@@ -221,14 +199,10 @@ const startBot = (database, socketIo, startGameLogic) => {
           }
       } catch(e) {}
 
-      // 2. SEND: Winner Announcement to Group
       const newMsgId = await broadcastToGroup(msg);
-
-      // 3. SAVE: Store ID to delete it when the NEXT game starts
       if(newMsgId) await saveMsgId('last_winner_msg_id', newMsgId);
   });
 
-  // --- HELPER: BROADCAST TO ADMINS ---
   const broadcastToAdmins = async (text, options = {}) => {
       const envAdmins = adminIds;
       let dbAdmins = [];
@@ -267,7 +241,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       return `👋 **Bingo Game Invite / የቢንጎ ጨዋታ ግብዣ**\n\n1️⃣ Click: https://t.me/${botUsername}?start=bingo\n2️⃣ Press **START**\n3️⃣ Press **📱 Share Contact**`;
   };
 
-  // --- DETAILED WELCOME MESSAGE ---
   const getDetailedWelcome = () => {
       return `👋 **WELCOME TO THE BINGO COMMUNITY!**\n` +
              `**እንኳን ወደ ቢንጎ ግሩፕ በደህና መጡ!**\n\n` +
@@ -310,24 +283,19 @@ const startBot = (database, socketIo, startGameLogic) => {
       } catch(e) { console.error("Start Error", e); }
   };
 
-  // --- EVENT: NEW MEMBER JOINING GROUP ---
   bot.on('message', (msg) => {
       if (msg.new_chat_members) {
           msg.new_chat_members.forEach(member => {
               if (!member.is_bot) {
-                   // Send the detailed explanation
                    bot.sendMessage(msg.chat.id, getDetailedWelcome(), { parse_mode: "Markdown" }).catch(()=>{});
               }
           });
       }
   });
 
-  // --- START COMMAND ---
   bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
-    
-    // Handle Deep Linking (e.g., t.me/bot?start=bingo)
     const text = msg.text || '';
     const isDeepLink = text.split(' ').length > 1;
 
@@ -342,10 +310,8 @@ const startBot = (database, socketIo, startGameLogic) => {
                 bot.sendMessage(chatId, `👋 **Welcome!**\n🚀 **To Start / ለመጀመር:**\nPress the button below.`, { reply_markup: shareContactKeyboard, parse_mode: "Markdown" }).catch(()=>{});
             } else {
                 if (isDeepLink) {
-                    // Automatically trigger the play button if they came from the group link
                     triggerStart(chatId, user);
                 } else {
-                    // Show menu (removed 'Join Group' from text, added to keyboard)
                     const opts = { reply_markup: userKeyboard, parse_mode: "Markdown" };
                     bot.sendMessage(chatId, `Welcome back, ${user.username}!`, opts).catch(()=>{});
                 }
@@ -354,7 +320,6 @@ const startBot = (database, socketIo, startGameLogic) => {
     }
   });
 
-  // --- PHOTO HANDLER (DEPOSITS) ---
   bot.on('photo', async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
@@ -404,7 +369,6 @@ const startBot = (database, socketIo, startGameLogic) => {
     }
   });
 
-  // --- CONTACT SHARED ---
   bot.on('contact', async (msg) => {
     const tgId = msg.from.id;
     const phone = cleanPhone(msg.contact.phone_number);
@@ -427,7 +391,6 @@ const startBot = (database, socketIo, startGameLogic) => {
     } catch (err) { console.error(err); }
   });
 
-  // --- CALLBACK QUERY HANDLER ---
   bot.on('callback_query', async (cq) => {
     const action = cq.data;
     const msg = cq.message;
@@ -501,7 +464,6 @@ const startBot = (database, socketIo, startGameLogic) => {
             return;
         }
 
-        // --- DEPOSIT / WITHDRAW HANDLING ---
         if (action.startsWith('dep_') || action.startsWith('wd_') || action.startsWith('prem_')) {
             const parts = action.split('_'); 
             const type = parts[0]; 
@@ -509,9 +471,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             const targetId = parseInt(parts[2]); 
             const val = parts[3]; 
 
-            // -- NEW: DEPOSIT REJECTION WITH REASON --
             if (type === 'dep' && decision === 'reject' && parts.length === 4) {
-                // Ask for reason using buttons
                 const kb = {
                     inline_keyboard: [
                         [{ text: "Wrong Amount / የተሳሳተ ብር", callback_data: `dep_reject_${targetId}_${val}_amount` }],
@@ -524,7 +484,6 @@ const startBot = (database, socketIo, startGameLogic) => {
             }
 
             if (type === 'dep' || type === 'prem') {
-                // LOCK: Check if pending.
                 const depRes = await db.query("SELECT * FROM deposits WHERE id = $1 AND status = 'pending' FOR UPDATE SKIP LOCKED", [targetId]);
                 if (depRes.rows.length === 0) return bot.answerCallbackQuery(cq.id, {text: "Already processed by another admin!", show_alert: true});
                 
@@ -543,7 +502,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                         
                         if (deposit.telegram_id) bot.sendMessage(deposit.telegram_id, `✅ *Deposit Accepted!*\n\n+${val} Points`, { parse_mode: "Markdown" }).catch(()=>{});
                     } 
-                    // REJECT WITH REASON LOGIC
                     else if (decision === 'reject' && parts.length === 5) {
                         const reasonCode = parts[4];
                         let reasonText = "Admin rejected request.";
@@ -592,13 +550,11 @@ const startBot = (database, socketIo, startGameLogic) => {
     } catch (err) { console.error("Callback Error:", err); }
   });
 
-  // --- TEXT HANDLER ---
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
     if (!text) return;
 
-    // --- NEW: JOIN GROUP BUTTON ON PLAYER KEYBOARD (TEXT HANDLER) ---
     if (text === "📢 Join Group / ግሩፕ ይቀላቀሉ") {
         const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
         const url = groupRes.rows[0]?.value;
@@ -610,7 +566,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    // --- NEW: BROADCAST LINK BUTTON LOGIC ---
     if (text === "📢 Broadcast Group Link" || text.startsWith('/broadcast_link')) {
         if (await isAdmin(msg.from.id)) {
             const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
@@ -621,7 +576,6 @@ const startBot = (database, socketIo, startGameLogic) => {
             let count = 0;
             bot.sendMessage(chatId, `📢 Broadcasting group link to ${allUsers.rows.length} users...`);
             
-            // FANCY BROADCAST TEXT
             const fancyMsg = `👋 **Hello Bingo Players!**\n**ሰላም የቢንጎ ተጫዋቾች!**\n\n` +
                              `🔥 The game is happening NOW!\n` +
                              `🔥 ጨዋታው እየተካሄደ ነው!\n\n` +
@@ -741,10 +695,8 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    // Check permissions for admin commands
     if (userIsAdmin) {
         if (text.startsWith("🆕 New Game")) {
-            // SINGLE PENDING GAME CHECK
             const pendingGames = await db.query("SELECT id FROM games WHERE status = 'pending'");
             if (pendingGames.rows.length > 0) {
                 return bot.sendMessage(chatId, `⚠️ **Game #${pendingGames.rows[0].id} is already pending!**\n\nYou must START or ABORT it before creating a new one.`, { parse_mode: "Markdown" });
@@ -776,7 +728,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const userCountRes = await db.query("SELECT COUNT(*) as count FROM users");
                 const totalUsers = userCountRes.rows[0].count;
                 
-                // PROFIT CALCULATION
                 const payoutRes = await db.query("SELECT COALESCE(SUM(pot), 0) as total_payouts, COUNT(*) as count FROM games WHERE status = 'finished'");
                 const totalGames = payoutRes.rows[0].count;
                 const totalPayouts = parseInt(payoutRes.rows[0].total_payouts);
@@ -943,7 +894,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 if (error) {
                     bot.sendMessage(chatId, `❌ ${error}`).catch(()=>{});
                 } else {
-                    // NEW: Include Join Group button
                     const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
                     const groupUrl = groupRes.rows[0]?.value;
                     const opts = { parse_mode: "Markdown" };
@@ -977,9 +927,9 @@ const startBot = (database, socketIo, startGameLogic) => {
                 delete chatStates[chatId]; 
 
                 if (result.error) {
-                     bot.sendMessage(chatId, `❌ **Error:** ${result.error}\n\nTry /start again.`, { reply_markup: userKeyboard });
+                     // IMPROVED ERROR REPORTING HERE
+                     bot.sendMessage(chatId, `❌ **Registration Failed:**\n${result.error}\n\nPlease try /start again with a different username.`, { reply_markup: userKeyboard, parse_mode: "Markdown" });
                 } else {
-                     // JOIN GROUP BUTTON
                      const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
                      const groupUrl = groupRes.rows[0]?.value;
                      const opts = { parse_mode: "Markdown" };
@@ -1002,7 +952,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 bot.sendMessage(chatId, `📸 **Send Screenshot** or Reply with Transaction ID:`);
             }
             else if (state.step === 'awaiting_deposit_proof') {
-                // Manual text proof logic (if not photo)
                 const txnCode = text.trim();
                 const txnRes = await db.query("SELECT * FROM bank_transactions WHERE txn_code = $1", [txnCode]);
                 if (txnRes.rows.length > 0 && txnRes.rows[0].status !== 'claimed') {
@@ -1085,7 +1034,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const gameId = res.rows[0].id;
                 io.emit('gameStateUpdate', { status: 'pending', gameId, displayId: dailyId, betAmount: betAmount, pot: 0, calledNumbers: [], pattern });
                 
-                // ANNOUNCE TO GROUP (INVITE)
                 const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
                 const groupChatId = groupRes.rows[0]?.value;
                 const inviteLink = `https://t.me/${botUsername}?start=bingo`;
@@ -1097,7 +1045,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                                   `Rule: ${safePattern}\n\n` +
                                   `🆕 **New Game Created! Join Now!**`;
                 
-                // Send URL as button
                 const groupOpts = {
                     parse_mode: "Markdown",
                     reply_markup: {
@@ -1105,7 +1052,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                     }
                 };
 
-                // Removed strict check on ID format to allow flexibility
                 if (groupChatId) {
                     bot.sendMessage(groupChatId, inviteMsg, groupOpts).catch(e => console.error("Group Send Error:", e.message));
                 }
@@ -1195,7 +1141,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const newName = text.trim();
                 if (newName.length < 3) return bot.sendMessage(chatId, "❌ Username too short.");
                 
-                // Check if taken
                 const check = await db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1)", [newName]);
                 if (check.rows.length > 0) return bot.sendMessage(chatId, "❌ Username already taken.");
 
@@ -1234,7 +1179,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 delete chatStates[chatId];
             }
 
-            // --- SUPER ADMIN STATE HANDLERS ---
             else if (state.step === 'awaiting_promote_username') {
                  const targetUsername = text.trim();
                  const userRes = await db.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [targetUsername]);

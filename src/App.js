@@ -20,7 +20,7 @@ const TRANSLATIONS = {
     save: "Save",
     hostMsg: "Host will start the game soon.",
     bet: "Bet",
-    prize: "Est. Prize", 
+    prize: "Prize", 
     pattern: "Winning Pattern",
     myCards: "My Cards",
     reqCards: "Buy Cards",
@@ -62,7 +62,7 @@ const TRANSLATIONS = {
     save: "አስቀምጥ",
     hostMsg: "ተጫዋቾችን በመጠበቅ ላይ",
     bet: "መወራረጃ",
-    prize: "ግምታዊ ሽልማት",
+    prize: "ሽልማት",
     pattern: "የአሸናፊነት ህግ",
     myCards: "የኔ ካርዶች",
     reqCards: "ካርድ ይግዙ",
@@ -184,21 +184,17 @@ function App() {
   useEffect(() => { langRef.current = lang; }, [lang]); 
 
   // --- RESTORE MARKED CELLS ON REFRESH ---
-  // This effect runs when the gameID is set (after socket connection). 
-  // It checks local storage and merges it with current state to prevent data loss.
   useEffect(() => {
       if(gameState.gameId) {
           const savedMarks = localStorage.getItem(`bingo_marks_${gameState.gameId}`);
           if (savedMarks) {
               const parsed = JSON.parse(savedMarks);
               const restored = {};
-              // Convert arrays back to Sets for React state
               Object.keys(parsed).forEach(key => restored[key] = new Set(parsed[key]));
               
               setMarkedCells(prev => {
                   const combined = { ...prev };
                   Object.keys(restored).forEach(key => {
-                      // If we already have marks (from socket), don't overwrite blindly, merge them
                       if(combined[key]) {
                           restored[key].forEach(val => combined[key].add(val));
                       } else {
@@ -215,7 +211,6 @@ function App() {
   useEffect(() => {
       if(gameState.gameId && Object.keys(markedCells).length > 0) {
           const serializable = {};
-          // Convert Sets to Arrays for JSON storage
           Object.keys(markedCells).forEach(key => serializable[key] = Array.from(markedCells[key]));
           localStorage.setItem(`bingo_marks_${gameState.gameId}`, JSON.stringify(serializable));
       }
@@ -232,7 +227,6 @@ function App() {
       setCheckingCardId(null);
       setCustomCardNum("");
       setIsConfirming(false);
-      // Only clear storage when game is strictly IDLE
       if(gameState.gameId) localStorage.removeItem(`bingo_marks_${gameState.gameId}`);
     }
   }, [gameState.status, gameState.gameId]);
@@ -383,10 +377,6 @@ function App() {
     socket.on("cardStatesUpdate", (updates) => setCardStates(prev => ({ ...prev, ...updates })));
     
     socket.on("gameStateUpdate", (data) => {
-      // Handle cleanup if moving to idle
-      if (data.status === 'idle') {
-          // Check if we actually need to clear - avoiding flickers
-      } 
       setGameState(prev => ({ ...prev, ...data }));
       
       if (data.status === 'finished' && data.winner && !gameState.winner) {
@@ -396,7 +386,7 @@ function App() {
       if (data.myCards) {
           setMyCards(data.myCards);
           setMarkedCells(prev => {
-              if (Object.keys(prev).length > 0) return prev; // If local storage already loaded marks, don't overwrite
+              if (Object.keys(prev).length > 0) return prev; 
               const newMarked = {};
               data.myCards.forEach(card => { newMarked[card.id] = new Set(['FREE']); });
               return newMarked;
@@ -472,7 +462,13 @@ function App() {
   const claimBingo = (cardId) => { if (!cardId || gameState.status !== 'active' || !auth) return; setCheckingCardId(cardId); socket.emit("claimBingo", { ...auth, gameId: gameState.gameId, cardId, markedCells: Array.from(markedCells[cardId] || new Set()) }); };
 
   if (!auth) return <div className="App login-screen"><h2>{t('invalid')}</h2></div>;
-  const estPrize = Math.floor(gameState.pot * 0.7);
+
+  // PRIZE DISPLAY LOGIC:
+  // If Pending: Show 70% of current pool (Estimated Prize).
+  // If Active/Finished: Show the fixed pot (Actual Prize).
+  const displayPrize = gameState.status === 'pending' 
+    ? Math.floor(gameState.pot * 0.7) 
+    : gameState.pot;
 
   return (
     <div className="App">
@@ -525,7 +521,7 @@ function App() {
                 <PatternDisplay pattern={gameState.pattern} t={t} />
                 <div className="prize-box">
                     <span className="lbl">{t('gameId')} {gameState.displayId || gameState.gameId}</span>
-                    <span className="val">{gameState.pot > 0 ? gameState.pot : estPrize}</span>
+                    <span className="val">{displayPrize}</span>
                 </div>
             </div>
           )}

@@ -31,7 +31,6 @@ async function initializeDatabase() {
         await client.query(`CREATE TABLE IF NOT EXISTS transactions (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), type VARCHAR(50) NOT NULL, amount INTEGER NOT NULL, related_user_id INTEGER, game_id INTEGER, description TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS system_settings (key VARCHAR(50) PRIMARY KEY, value TEXT);`);
 
-        // --- MIGRATION: Add daily_id column ---
         await client.query(`
             DO $$ BEGIN
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'games' AND column_name = 'daily_id') THEN
@@ -65,7 +64,6 @@ initializeDatabase();
 
 const logTransaction = async (userId, type, amount, relatedUserId = null, gameId = null, description = '') => {
     try {
-        // description often contains the Transaction ID or Reference (e.g., "SMS Deposit 8H7G6F")
         await pool.query(
             `INSERT INTO transactions (user_id, type, amount, related_user_id, game_id, description) 
              VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -76,7 +74,49 @@ const logTransaction = async (userId, type, amount, relatedUserId = null, gameId
     }
 };
 
+// IMPROVED: Safer Account Linking to prevent errors
+async function linkTelegramAccount(phone, tgId, username) {
+    try {
+        // 1. Check Username Collision (Case Insensitive)
+        const userCheck = await pool.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [username]);
+        if (userCheck.rows.length > 0 && userCheck.rows[0].phone_number !== phone) {
+            return { error: "Username taken! Try another one." };
+        }
+
+        // 2. Check if account with PHONE exists
+        const userByPhone = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phone]);
+        
+        // 3. Check if account with TELEGRAM_ID exists (orphan/incomplete)
+        const userByTg = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [tgId]);
+
+        if (userByPhone.rows.length > 0) {
+            // Phone exists: Link this account to Telegram
+            const updatedUser = await pool.query('UPDATE users SET telegram_id = $1 WHERE phone_number = $2 RETURNING *', [tgId, phone]);
+            
+            // If there was a stale row with just this Telegram ID, delete it to clean up
+            if (userByTg.rows.length > 0 && userByTg.rows[0].id !== updatedUser.rows[0].id) {
+                await pool.query('DELETE FROM users WHERE id = $1', [userByTg.rows[0].id]);
+            }
+            return { user: updatedUser.rows[0], status: 'account_linked' };
+        } 
+        else if (userByTg.rows.length > 0) {
+            // Telegram ID exists but no phone was attached (unlikely but possible). Update it.
+            const updatedUser = await pool.query('UPDATE users SET phone_number = $1, username = $2 WHERE telegram_id = $3 RETURNING *', [phone, username, tgId]);
+            return { user: updatedUser.rows[0], status: 'profile_updated' };
+        }
+        else {
+            // New User
+            const newUser = await pool.query('INSERT INTO users (phone_number, telegram_id, username, points) VALUES ($1, $2, $3, 100) RETURNING *', [phone, tgId, username]);
+            return { user: newUser.rows[0], status: 'new_user_created' };
+        }
+    } catch (err) {
+        console.error("Link Account Error:", err);
+        return { error: "Database error during registration." };
+    }
+}
+
 module.exports = {
   query: (text, params) => pool.query(text, params),
-  logTransaction
+  logTransaction,
+  linkTelegramAccount // Exporting specifically for gameManager/bot usage if needed directly
 };
