@@ -7,9 +7,10 @@ let io;
 const chatStates = {};
 let botUsername = "BingoBot";
 
+// Helper to clean phone numbers
 const cleanPhone = (p) => p ? p.replace(/\D/g, '') : '';
 
-// Improved escaper for Legacy Markdown
+// Improved escaper for Legacy Markdown to prevent errors
 const escapeMarkdown = (text) => {
     if (!text) return '';
     return String(text).replace(/[_*[\]()`]/g, '\\$&');
@@ -19,7 +20,7 @@ const startBot = (database, socketIo, startGameLogic) => {
   io = socketIo;
 
   const token = process.env.TELEGRAM_TOKEN;
-  // Parse Admins
+  // Parse Admin IDs from .env
   const adminIds = (process.env.ADMIN_TELEGRAM_ID || '')
       .split(',')
       .map(id => parseInt(id.trim(), 10))
@@ -28,7 +29,33 @@ const startBot = (database, socketIo, startGameLogic) => {
   const superAdminId = adminIds.length > 0 ? adminIds[0] : null;
   const publicUrl = process.env.PUBLIC_URL;
 
-  // Check roles
+  // --- DATABASE HELPER FUNCTIONS FOR MESSAGE TRACKING ---
+  // These functions manage saving/retrieving message IDs to delete them later
+  const saveMsgId = async (key, msgId) => {
+      // Stores message IDs (like last_join_msg, last_winner_msg) in system_settings table
+      try {
+          await db.query(
+              "INSERT INTO system_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", 
+              [key, String(msgId)]
+          );
+      } catch (e) { console.error("DB Save Msg Error:", e.message); }
+  };
+
+  const getMsgId = async (key) => {
+      try {
+          const res = await db.query("SELECT value FROM system_settings WHERE key = $1", [key]);
+          return res.rows.length ? parseInt(res.rows[0].value) : null;
+      } catch (e) { return null; }
+  };
+
+  const getGroupId = async () => {
+      try {
+          const res = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
+          return res.rows.length ? res.rows[0].value : null;
+      } catch (e) { return null; }
+  };
+
+  // --- ROLE CHECKERS ---
   const isAdmin = async (id) => {
       if (adminIds.includes(id)) return true;
       const res = await db.query("SELECT role FROM users WHERE telegram_id = $1", [id]);
@@ -43,6 +70,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
   if (!token) return;
   
+  // Initialize Bot with Polling
   const bot = new TelegramBot(token, { 
       polling: {
           interval: 300,
@@ -51,6 +79,7 @@ const startBot = (database, socketIo, startGameLogic) => {
       }
   });
 
+  // Prevent polling errors from crashing the app
   bot.on('polling_error', (error) => {
       if (['EFATAL','ECONNRESET','ETIMEDOUT'].includes(error.code)) return;
       console.error(`[Polling Error] ${error.code}: ${error.message}`);
@@ -92,8 +121,8 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "🚀 Play Bingo / ጨዋታውን ጀምር" }],
           [{ text: "💰 My Points / ነጥቦቼ" }, { text: "🏦 Deposit / ገቢ አድርግ" }],
           [{ text: "💸 Transfer / አስተላልፍ" }, { text: "🏧 Withdraw / ወጪ አድርግ" }],
-          [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "ℹ️ Guide / መመሪያ" }], 
-          [{ text: "🌟 Buy Premium / ፕሪሚየም ይግዙ" }, { text: "🆘 Help / እርዳታ" }]
+          [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "📢 Join Group / ግሩፕ ይቀላቀሉ" }],
+          [{ text: "ℹ️ Guide / መመሪያ" }, { text: "🌟 Buy Premium / ፕሪሚየም ይግዙ" }]
       ],
       resize_keyboard: true,
       persistent: true
@@ -114,19 +143,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       ]
   };
 
-  // --- DB HELPERS FOR MESSAGES ---
-  const saveMsgId = async (key, msgId) => {
-      await db.query("INSERT INTO system_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", [key, String(msgId)]);
-  };
-  const getMsgId = async (key) => {
-      const res = await db.query("SELECT value FROM system_settings WHERE key = $1", [key]);
-      return res.rows.length ? parseInt(res.rows[0].value) : null;
-  };
-  const getGroupId = async () => {
-      const res = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
-      return res.rows.length ? res.rows[0].value : null;
-  };
-
   // --- BROADCAST HELPER ---
   const broadcastToGroup = async (text, options = {}) => {
       try {
@@ -135,60 +151,84 @@ const startBot = (database, socketIo, startGameLogic) => {
              const sentMsg = await bot.sendMessage(chatId, text, { parse_mode: "Markdown", ...options });
              return sentMsg.message_id;
           }
-      } catch(e) { console.error("Broadcast Error:", e.message); return null; }
+      } catch(e) { 
+          console.error("Broadcast Error:", e.message); 
+          return null;
+      }
   };
 
-  // --- GAME EVENT CALLBACKS ---
-  
-  // 1. Game Start Announcement
+  // --- GAME START CALLBACK ---
+  // Triggered when a new game is created/set by Admin
   setGameStartCallback(async (gameId, dailyId, prize, pattern) => {
       const inviteLink = `https://t.me/${botUsername}?start=bingo`;
       const safePattern = String(pattern).replace(/_/g, ' ').toUpperCase(); 
-      const msg = `🎮 *GAME #${dailyId} STARTED!* / *ጨዋታ #${dailyId} ተጀምሯል!*\n\n` +
+      
+      const msg = `🎮 *GAME #${dailyId} OPEN!* / *ጨዋታ #${dailyId} ተከፍቷል!*\n\n` +
                   `💰 Prize: *${prize}*\n` +
                   `📜 Rule: *${safePattern}*\n\n` +
-                  `🚀 Good Luck! / መልካም ዕድል!`;
-      const opts = { reply_markup: { inline_keyboard: [[{ text: "👇 JOIN GAME / ተቀላቀል 👇", url: inviteLink }]] } };
+                  `🚀 *Join quickly before it starts!* \n` +
+                  `🚀 *ጨዋታው ከመጀመሩ በፊት ይቀላቀሉ!*`;
       
-      // 1. Delete previous Winners List (Clean up old news)
+      const opts = { 
+          reply_markup: { 
+              inline_keyboard: [[{ text: "👇 JOIN GAME / ጨዋታውን ይጀምሩ 👇", url: inviteLink }]] 
+          } 
+      };
+      
+      // 1. CLEANUP: Delete the "Winners List" from the PREVIOUS game/day
       try {
           const oldWinnerMsgId = await getMsgId('last_winner_msg_id');
           const chatId = await getGroupId();
-          if (oldWinnerMsgId && chatId) await bot.deleteMessage(chatId, oldWinnerMsgId).catch(() => {});
+          if (oldWinnerMsgId && chatId) {
+              await bot.deleteMessage(chatId, oldWinnerMsgId).catch(() => {}); // Ignore error if too old
+          }
       } catch(e) {}
 
-      // 2. Send New Game Message
-      const newMsgId = await broadcastToGroup(msg, opts);
-      
-      // 3. Save this ID as 'last_join_msg_id' to delete it later
-      if(newMsgId) await saveMsgId('last_join_msg_id', newMsgId);
-  });
-
-  // 2. Game End Announcement
-  setGameEndCallback(async (gameId, winnerText, dailyId) => {
-      const safeWinner = escapeMarkdown(winnerText);
-      const displayId = dailyId || gameId;
-      const msg = `🏁 *GAME #${displayId} FINISHED!* / *ጨዋታ #${displayId} ተጠናቀቀ!*\n\n` +
-                  `🏆 Winner: ${safeWinner}\n` +
-                  `🏆 አሸናፊ: ${safeWinner}\n\n`;
-      
-      broadcastToAdmins(msg, { parse_mode: "Markdown" });
-      
-      // 1. Delete the "Join Game" button message (Game is over)
+      // 2. CLEANUP: Delete any stuck "Join" buttons from aborted games
       try {
           const oldJoinMsgId = await getMsgId('last_join_msg_id');
           const chatId = await getGroupId();
-          if (oldJoinMsgId && chatId) await bot.deleteMessage(chatId, oldJoinMsgId).catch(() => {});
+          if (oldJoinMsgId && chatId) {
+              await bot.deleteMessage(chatId, oldJoinMsgId).catch(() => {});
+          }
       } catch(e) {}
 
-      // 2. Send Winner Message
+      // 3. SEND: New Game Announcement
+      const newMsgId = await broadcastToGroup(msg, opts);
+      
+      // 4. SAVE: Store ID to delete it when game ends
+      if(newMsgId) await saveMsgId('last_join_msg_id', newMsgId);
+  });
+
+  // --- GAME END CALLBACK ---
+  // Triggered when a game finishes
+  setGameEndCallback(async (gameId, winnerText, dailyId) => {
+      const safeWinner = escapeMarkdown(winnerText);
+      const displayId = dailyId || gameId;
+      const msg = `🏁 *GAME #${displayId} ENDED!* / *ጨዋታ #${displayId} ተጠናቀቀ!*\n\n` +
+                  `🏆 **WINNER / አሸናፊ:**\n${safeWinner}\n\n` +
+                  `🎉 Congratulations! / እንኳን ደስ አለዎት!`;
+      
+      // Notify Admins
+      broadcastToAdmins(msg, { parse_mode: "Markdown" });
+      
+      // 1. CLEANUP: Delete the "Join Game" button message (Game is over, link is invalid)
+      try {
+          const oldJoinMsgId = await getMsgId('last_join_msg_id');
+          const chatId = await getGroupId();
+          if (oldJoinMsgId && chatId) {
+              await bot.deleteMessage(chatId, oldJoinMsgId).catch(() => {});
+          }
+      } catch(e) {}
+
+      // 2. SEND: Winner Announcement to Group
       const newMsgId = await broadcastToGroup(msg);
 
-      // 3. Save this ID as 'last_winner_msg_id' to delete when next game starts
+      // 3. SAVE: Store ID to delete it when the NEXT game starts
       if(newMsgId) await saveMsgId('last_winner_msg_id', newMsgId);
   });
 
-  // --- HELPERS ---
+  // --- HELPER: BROADCAST TO ADMINS ---
   const broadcastToAdmins = async (text, options = {}) => {
       const envAdmins = adminIds;
       let dbAdmins = [];
@@ -198,6 +238,7 @@ const startBot = (database, socketIo, startGameLogic) => {
       } catch (e) { console.error("DB Admin Fetch Error", e); }
 
       const allAdmins = [...new Set([...envAdmins, ...dbAdmins])];
+      
       for (const id of allAdmins) {
           let opts = { ...options };
           if (!opts.reply_markup) {
@@ -226,33 +267,38 @@ const startBot = (database, socketIo, startGameLogic) => {
       return `👋 **Bingo Game Invite / የቢንጎ ጨዋታ ግብዣ**\n\n1️⃣ Click: https://t.me/${botUsername}?start=bingo\n2️⃣ Press **START**\n3️⃣ Press **📱 Share Contact**`;
   };
 
+  // --- DETAILED WELCOME MESSAGE ---
   const getDetailedWelcome = () => {
-      return `👋 **Welcome to the Bingo Community!**\n**እንኳን ወደ ቢንጎ ግሩፕ በደህና መጡ!**\n\n` +
+      return `👋 **WELCOME TO THE BINGO COMMUNITY!**\n` +
+             `**እንኳን ወደ ቢንጎ ግሩፕ በደህና መጡ!**\n\n` +
+             `🤖 **BOT LINK:** @${botUsername}\n\n` +
              `🎮 **HOW TO PLAY / እንዴት እንደሚጫወቱ:**\n` +
-             `1. Go to the Bot: @${botUsername}\n` +
-             `2. Click '🚀 Play'.\n` +
-             `3. Buy cards when a game is open.\n` +
-             `4. Wait for the game to start and numbers to be called.\n\n` +
-             `1. ወደ ቦቱ ይሂዱ: @${botUsername}\n` +
-             `2. '🚀 Play' የሚለውን ይጫኑ።\n` +
-             `3. ጨዋታ ሲከፈት ካርድ ይግዙ።\n` +
-             `4. ቁጥሮች ሲጠሩ ይጠብቁ እና ይጫወቱ።\n\n` +
+             `1. Go to the Bot (@${botUsername}) and click **START**.\n` +
+             `2. Click **'🚀 Play'** to open the game app.\n` +
+             `3. When a game is created, buy your cards (1-5 cards).\n` +
+             `4. Wait for the countdown. When the game starts, numbers will be called automatically.\n` +
+             `5. If you get the winning pattern (e.g., Any Line), click **BINGO**!\n\n` +
+             `1. ወደ ቦቱ (@${botUsername}) ይሂዱና **START** ይበሉ።\n` +
+             `2. **'🚀 Play'** የሚለውን በመጫን ጨዋታውን ይክፈሉ።\n` +
+             `3. ጨዋታ ሲጀመር ካርድ ይግዙ (እስከ 5 ካርድ)።\n` +
+             `4. ቁጥሮች ሲጠሩ ካርዶ ላይ ምልክት ያድርጉ (ወይም Premium ይግዙ ለ Auto-Play)።\n` +
+             `5. አሸናፊ ፓተርን ሲያገኙ **BINGO** የሚለውን ይጫኑ!\n\n` +
              `💰 **DEPOSIT / ብር ለማስገባት:**\n` +
-             `• In the Bot, click '🏦 Deposit'.\n` +
-             `• Send money to the bank account shown.\n` +
-             `• Send the screenshot or Transaction ID to the bot.\n\n` +
-             `• ቦቱ ላይ '🏦 Deposit' የሚለውን ይጫኑ።\n` +
-             `• በተሰጠው አካውንት ብር ያስገቡ።\n` +
-             `• ደረሰኝ ወይም የግብይት ቁጥር ለቦቱ ይላኩ።\n\n` +
+             `• Click **'🏦 Deposit'** in the bot.\n` +
+             `• Send money to the provided Bank/Telebirr account.\n` +
+             `• Send the **Transaction ID** or **Screenshot** to the bot.\n` +
+             `• Admins will verify and add points to your account.\n\n` +
              `🏧 **WITHDRAW / ብር ለማውጣት:**\n` +
-             `• Click '🏧 Withdraw', enter amount and your bank info.\n` +
-             `• '🏧 Withdraw' የሚለውን ይጫኑ፣ መጠኑን እና የባንክ መረጃዎን ያስገቡ።\n\n` +
-             `🚀 **Good Luck! / መልካም ዕድል!**`;
+             `• Click **'🏧 Withdraw'**.\n` +
+             `• Enter the amount (min 50).\n` +
+             `• Enter your Bank details.\n` +
+             `• Wait for admin approval.\n\n` +
+             `🚀 **Good Luck & Have Fun!**`;
   };
 
   const triggerStart = async (chatId, user) => {
       if (!publicUrl) {
-          bot.sendMessage(chatId, "❌ **System Error:** PUBLIC_URL is missing.");
+          bot.sendMessage(chatId, "❌ **System Error:** PUBLIC_URL is missing in settings.");
           return;
       }
       try {
@@ -260,15 +306,16 @@ const startBot = (database, socketIo, startGameLogic) => {
         await db.query('UPDATE users SET session_token = $1 WHERE id = $2', [token, user.id]);
         const url = `${publicUrl}?user_id=${user.id}&token=${token}`;
         const options = { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "🚀 Open Game / ጨዋታውን ክፈት", web_app: { url: url } }]] } };
-        bot.sendMessage(chatId, `👋 **Welcome ${user.username}!**\n👇 **Click below:**`, options).catch(e => console.error("Msg Error:", e.message));
+        bot.sendMessage(chatId, `👋 **Welcome ${user.username}!**\n👇 **Click below to play:**`, options).catch(e => console.error("Msg Error:", e.message));
       } catch(e) { console.error("Start Error", e); }
   };
 
-  // --- NEW MEMBER HANDLER (WELCOME MESSAGE) ---
+  // --- EVENT: NEW MEMBER JOINING GROUP ---
   bot.on('message', (msg) => {
       if (msg.new_chat_members) {
           msg.new_chat_members.forEach(member => {
               if (!member.is_bot) {
+                   // Send the detailed explanation
                    bot.sendMessage(msg.chat.id, getDetailedWelcome(), { parse_mode: "Markdown" }).catch(()=>{});
               }
           });
@@ -279,6 +326,10 @@ const startBot = (database, socketIo, startGameLogic) => {
   bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
+    
+    // Handle Deep Linking (e.g., t.me/bot?start=bingo)
+    const text = msg.text || '';
+    const isDeepLink = text.split(' ').length > 1;
 
     if (await isSuperAdmin(tgId)) {
          bot.sendMessage(chatId, "👑 *Super Admin Panel*", { parse_mode: "Markdown", reply_markup: superAdminKeyboard }).catch(()=>{});
@@ -290,19 +341,20 @@ const startBot = (database, socketIo, startGameLogic) => {
             if (!user) {
                 bot.sendMessage(chatId, `👋 **Welcome!**\n🚀 **To Start / ለመጀመር:**\nPress the button below.`, { reply_markup: shareContactKeyboard, parse_mode: "Markdown" }).catch(()=>{});
             } else {
-                const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
-                const groupUrl = groupRes.rows[0]?.value;
-                const opts = { reply_markup: userKeyboard, parse_mode: "Markdown" };
-                bot.sendMessage(chatId, `Welcome back, ${user.username}!`, opts).catch(()=>{});
-                if (groupUrl) {
-                    bot.sendMessage(chatId, `📢 **Join our Group!**`, { reply_markup: { inline_keyboard: [[{ text: "📢 Join Group", url: groupUrl }]] } });
+                if (isDeepLink) {
+                    // Automatically trigger the play button if they came from the group link
+                    triggerStart(chatId, user);
+                } else {
+                    // Show menu (removed 'Join Group' from text, added to keyboard)
+                    const opts = { reply_markup: userKeyboard, parse_mode: "Markdown" };
+                    bot.sendMessage(chatId, `Welcome back, ${user.username}!`, opts).catch(()=>{});
                 }
             }
         } catch (err) { console.error(err); }
     }
   });
 
-  // --- PHOTO HANDLER ---
+  // --- PHOTO HANDLER (DEPOSITS) ---
   bot.on('photo', async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
@@ -328,7 +380,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 [user.id, tgId, amount, fileId, type, duration]
             );
             const depId = res.rows[0].id;
-            bot.sendMessage(chatId, "✅ *Proof Received!*\nSent to admins.", { parse_mode: "Markdown", reply_markup: userKeyboard });
+            bot.sendMessage(chatId, "✅ *Proof Received!*\nSent to admins for approval.", { parse_mode: "Markdown", reply_markup: userKeyboard });
             
             let caption = "";
             let callbackPrefix = "";
@@ -364,13 +416,8 @@ const startBot = (database, socketIo, startGameLogic) => {
             const result = await linkTelegramAccount(phone, tgId, phoneCheck.rows[0].username);
             if (result.error) bot.sendMessage(chatId, `❌ **Error:** ${result.error}`, { reply_markup: userKeyboard });
             else {
-                 const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
-                 const groupUrl = groupRes.rows[0]?.value;
-                 const opts = { parse_mode: "Markdown" };
-                 if (groupUrl) opts.reply_markup = { inline_keyboard: [[{ text: "📢 Join Group", url: groupUrl }]] };
-                 
                  const kb = (await isSuperAdmin(tgId)) ? superAdminKeyboard : (await isAdmin(tgId) ? adminKeyboard : userKeyboard);
-                 bot.sendMessage(chatId, `✅ **Registered!**\nWelcome, ${result.user.username}!`, { ...opts, reply_markup: kb });
+                 bot.sendMessage(chatId, `✅ **Registered!**\nWelcome, ${result.user.username}!`, { parse_mode: "Markdown", reply_markup: kb });
                  triggerStart(chatId, result.user);
             }
         } else {
@@ -435,7 +482,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                      const newPot = Math.floor(totalCollected * 0.7);
                      await db.query("UPDATE games SET pot = $1 WHERE id = $2", [newPot, gameId]);
                      chatStates[chatId] = { step: 'awaiting_start_seconds', gameId: gameId, dailyId: game.daily_id };
-                     bot.sendMessage(chatId, `✅ *Prize: ${newPot}*\n⏱ Enter countdown seconds:`, {parse_mode: "Markdown"}).catch(()=>{});
+                     bot.sendMessage(chatId, `✅ *Prize set to ${newPot}*\n\n⏱ Enter countdown seconds to START (e.g., 10):`, {parse_mode: "Markdown"}).catch(()=>{});
                  } else {
                      chatStates[chatId] = { step: 'awaiting_custom_prize', gameId: gameId, max: totalCollected, dailyId: game.daily_id };
                      bot.sendMessage(chatId, `✏️ *Enter Custom Prize:*`, {parse_mode: "Markdown"}).catch(()=>{});
@@ -464,6 +511,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
             // -- NEW: DEPOSIT REJECTION WITH REASON --
             if (type === 'dep' && decision === 'reject' && parts.length === 4) {
+                // Ask for reason using buttons
                 const kb = {
                     inline_keyboard: [
                         [{ text: "Wrong Amount / የተሳሳተ ብር", callback_data: `dep_reject_${targetId}_${val}_amount` }],
@@ -550,6 +598,18 @@ const startBot = (database, socketIo, startGameLogic) => {
     const text = msg.text;
     if (!text) return;
 
+    // --- NEW: JOIN GROUP BUTTON ON PLAYER KEYBOARD (TEXT HANDLER) ---
+    if (text === "📢 Join Group / ግሩፕ ይቀላቀሉ") {
+        const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
+        const url = groupRes.rows[0]?.value;
+        if(url) {
+            bot.sendMessage(chatId, "📢 **Click to Join:**", { reply_markup: { inline_keyboard: [[{ text: "📢 JOIN GROUP", url: url }]] }, parse_mode: "Markdown" });
+        } else {
+            bot.sendMessage(chatId, "⚠️ No group link set.");
+        }
+        return;
+    }
+
     // --- NEW: BROADCAST LINK BUTTON LOGIC ---
     if (text === "📢 Broadcast Group Link" || text.startsWith('/broadcast_link')) {
         if (await isAdmin(msg.from.id)) {
@@ -561,9 +621,15 @@ const startBot = (database, socketIo, startGameLogic) => {
             let count = 0;
             bot.sendMessage(chatId, `📢 Broadcasting group link to ${allUsers.rows.length} users...`);
             
+            // FANCY BROADCAST TEXT
+            const fancyMsg = `👋 **Hello Bingo Players!**\n**ሰላም የቢንጎ ተጫዋቾች!**\n\n` +
+                             `🔥 The game is happening NOW!\n` +
+                             `🔥 ጨዋታው እየተካሄደ ነው!\n\n` +
+                             `👇 **JOIN THE GROUP BELOW / ግሩፑን ይቀላቀሉ:**`;
+
             for(const u of allUsers.rows) {
                 try {
-                    await bot.sendMessage(u.telegram_id, "📢 **Join our Community!**\n\nClick below to join the group:", { 
+                    await bot.sendMessage(u.telegram_id, fancyMsg, { 
                         parse_mode: "Markdown", 
                         reply_markup: { inline_keyboard: [[{ text: "📢 JOIN GROUP", url: url }]] } 
                     });
