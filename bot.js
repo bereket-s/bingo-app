@@ -71,7 +71,7 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "➕ Add Points" }, { text: "➖ Remove Points" }],
           [{ text: "➕ Bulk Add" }, { text: "🔄 Reset" }],
           [{ text: "📊 Daily Stats" }, { text: "📋 Transactions" }],
-          [{ text: "📈 Global Stats" }, { text: "📢 Broadcast Group Link" }], // NEW BUTTON ADDED HERE
+          [{ text: "📈 Global Stats" }, { text: "📢 Broadcast Group Link" }],
           [{ text: "⚠️ Reset All Points" }, { text: "🔧 SMS Tools" }] 
       ],
       resize_keyboard: true,
@@ -114,16 +114,28 @@ const startBot = (database, socketIo, startGameLogic) => {
       ]
   };
 
+  // --- DB HELPERS FOR MESSAGES ---
+  const saveMsgId = async (key, msgId) => {
+      await db.query("INSERT INTO system_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", [key, String(msgId)]);
+  };
+  const getMsgId = async (key) => {
+      const res = await db.query("SELECT value FROM system_settings WHERE key = $1", [key]);
+      return res.rows.length ? parseInt(res.rows[0].value) : null;
+  };
+  const getGroupId = async () => {
+      const res = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
+      return res.rows.length ? res.rows[0].value : null;
+  };
+
   // --- BROADCAST HELPER ---
   const broadcastToGroup = async (text, options = {}) => {
       try {
-          const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_chat_id'");
-          const chatId = groupRes.rows[0]?.value; 
-          // Allows any valid saved ID to work (negative or positive)
+          const chatId = await getGroupId();
           if (chatId) {
-             await bot.sendMessage(chatId, text, { parse_mode: "Markdown", ...options });
+             const sentMsg = await bot.sendMessage(chatId, text, { parse_mode: "Markdown", ...options });
+             return sentMsg.message_id;
           }
-      } catch(e) { console.error("Broadcast Error:", e.message); }
+      } catch(e) { console.error("Broadcast Error:", e.message); return null; }
   };
 
   // --- GAME EVENT CALLBACKS ---
@@ -137,7 +149,19 @@ const startBot = (database, socketIo, startGameLogic) => {
                   `📜 Rule: *${safePattern}*\n\n` +
                   `🚀 Good Luck! / መልካም ዕድል!`;
       const opts = { reply_markup: { inline_keyboard: [[{ text: "👇 JOIN GAME / ተቀላቀል 👇", url: inviteLink }]] } };
-      broadcastToGroup(msg, opts);
+      
+      // 1. Delete previous Winners List (Clean up old news)
+      try {
+          const oldWinnerMsgId = await getMsgId('last_winner_msg_id');
+          const chatId = await getGroupId();
+          if (oldWinnerMsgId && chatId) await bot.deleteMessage(chatId, oldWinnerMsgId).catch(() => {});
+      } catch(e) {}
+
+      // 2. Send New Game Message
+      const newMsgId = await broadcastToGroup(msg, opts);
+      
+      // 3. Save this ID as 'last_join_msg_id' to delete it later
+      if(newMsgId) await saveMsgId('last_join_msg_id', newMsgId);
   });
 
   // 2. Game End Announcement
@@ -147,8 +171,21 @@ const startBot = (database, socketIo, startGameLogic) => {
       const msg = `🏁 *GAME #${displayId} FINISHED!* / *ጨዋታ #${displayId} ተጠናቀቀ!*\n\n` +
                   `🏆 Winner: ${safeWinner}\n` +
                   `🏆 አሸናፊ: ${safeWinner}\n\n`;
+      
       broadcastToAdmins(msg, { parse_mode: "Markdown" });
-      broadcastToGroup(msg);
+      
+      // 1. Delete the "Join Game" button message (Game is over)
+      try {
+          const oldJoinMsgId = await getMsgId('last_join_msg_id');
+          const chatId = await getGroupId();
+          if (oldJoinMsgId && chatId) await bot.deleteMessage(chatId, oldJoinMsgId).catch(() => {});
+      } catch(e) {}
+
+      // 2. Send Winner Message
+      const newMsgId = await broadcastToGroup(msg);
+
+      // 3. Save this ID as 'last_winner_msg_id' to delete when next game starts
+      if(newMsgId) await saveMsgId('last_winner_msg_id', newMsgId);
   });
 
   // --- HELPERS ---
@@ -189,9 +226,33 @@ const startBot = (database, socketIo, startGameLogic) => {
       return `👋 **Bingo Game Invite / የቢንጎ ጨዋታ ግብዣ**\n\n1️⃣ Click: https://t.me/${botUsername}?start=bingo\n2️⃣ Press **START**\n3️⃣ Press **📱 Share Contact**`;
   };
 
+  const getDetailedWelcome = () => {
+      return `👋 **Welcome to the Bingo Community!**\n**እንኳን ወደ ቢንጎ ግሩፕ በደህና መጡ!**\n\n` +
+             `🎮 **HOW TO PLAY / እንዴት እንደሚጫወቱ:**\n` +
+             `1. Go to the Bot: @${botUsername}\n` +
+             `2. Click '🚀 Play'.\n` +
+             `3. Buy cards when a game is open.\n` +
+             `4. Wait for the game to start and numbers to be called.\n\n` +
+             `1. ወደ ቦቱ ይሂዱ: @${botUsername}\n` +
+             `2. '🚀 Play' የሚለውን ይጫኑ።\n` +
+             `3. ጨዋታ ሲከፈት ካርድ ይግዙ።\n` +
+             `4. ቁጥሮች ሲጠሩ ይጠብቁ እና ይጫወቱ።\n\n` +
+             `💰 **DEPOSIT / ብር ለማስገባት:**\n` +
+             `• In the Bot, click '🏦 Deposit'.\n` +
+             `• Send money to the bank account shown.\n` +
+             `• Send the screenshot or Transaction ID to the bot.\n\n` +
+             `• ቦቱ ላይ '🏦 Deposit' የሚለውን ይጫኑ።\n` +
+             `• በተሰጠው አካውንት ብር ያስገቡ።\n` +
+             `• ደረሰኝ ወይም የግብይት ቁጥር ለቦቱ ይላኩ።\n\n` +
+             `🏧 **WITHDRAW / ብር ለማውጣት:**\n` +
+             `• Click '🏧 Withdraw', enter amount and your bank info.\n` +
+             `• '🏧 Withdraw' የሚለውን ይጫኑ፣ መጠኑን እና የባንክ መረጃዎን ያስገቡ።\n\n` +
+             `🚀 **Good Luck! / መልካም ዕድል!**`;
+  };
+
   const triggerStart = async (chatId, user) => {
       if (!publicUrl) {
-          bot.sendMessage(chatId, "❌ **System Error:** PUBLIC_URL is missing in settings.");
+          bot.sendMessage(chatId, "❌ **System Error:** PUBLIC_URL is missing.");
           return;
       }
       try {
@@ -202,6 +263,17 @@ const startBot = (database, socketIo, startGameLogic) => {
         bot.sendMessage(chatId, `👋 **Welcome ${user.username}!**\n👇 **Click below:**`, options).catch(e => console.error("Msg Error:", e.message));
       } catch(e) { console.error("Start Error", e); }
   };
+
+  // --- NEW MEMBER HANDLER (WELCOME MESSAGE) ---
+  bot.on('message', (msg) => {
+      if (msg.new_chat_members) {
+          msg.new_chat_members.forEach(member => {
+              if (!member.is_bot) {
+                   bot.sendMessage(msg.chat.id, getDetailedWelcome(), { parse_mode: "Markdown" }).catch(()=>{});
+              }
+          });
+      }
+  });
 
   // --- START COMMAND ---
   bot.onText(/\/start/, async (msg) => {
@@ -363,7 +435,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                      const newPot = Math.floor(totalCollected * 0.7);
                      await db.query("UPDATE games SET pot = $1 WHERE id = $2", [newPot, gameId]);
                      chatStates[chatId] = { step: 'awaiting_start_seconds', gameId: gameId, dailyId: game.daily_id };
-                     bot.sendMessage(chatId, `✅ *Prize set to ${newPot}*\n\n⏱ Enter countdown seconds:`, {parse_mode: "Markdown"}).catch(()=>{});
+                     bot.sendMessage(chatId, `✅ *Prize: ${newPot}*\n⏱ Enter countdown seconds:`, {parse_mode: "Markdown"}).catch(()=>{});
                  } else {
                      chatStates[chatId] = { step: 'awaiting_custom_prize', gameId: gameId, max: totalCollected, dailyId: game.daily_id };
                      bot.sendMessage(chatId, `✏️ *Enter Custom Prize:*`, {parse_mode: "Markdown"}).catch(()=>{});
@@ -392,7 +464,6 @@ const startBot = (database, socketIo, startGameLogic) => {
 
             // -- NEW: DEPOSIT REJECTION WITH REASON --
             if (type === 'dep' && decision === 'reject' && parts.length === 4) {
-                // Ask for reason using buttons
                 const kb = {
                     inline_keyboard: [
                         [{ text: "Wrong Amount / የተሳሳተ ብር", callback_data: `dep_reject_${targetId}_${val}_amount` }],
@@ -405,7 +476,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             }
 
             if (type === 'dep' || type === 'prem') {
-                // LOCK: Check if pending. If not, stop. This prevents double clicking by admins.
+                // LOCK: Check if pending.
                 const depRes = await db.query("SELECT * FROM deposits WHERE id = $1 AND status = 'pending' FOR UPDATE SKIP LOCKED", [targetId]);
                 if (depRes.rows.length === 0) return bot.answerCallbackQuery(cq.id, {text: "Already processed by another admin!", show_alert: true});
                 
