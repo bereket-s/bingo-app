@@ -473,7 +473,8 @@ const startBot = (database, socketIo, startGameLogic) => {
 
             if (cmd === 'refresh') {
                  if(game.status !== 'pending') return bot.answerCallbackQuery(cq.id, { text: "Game started/finished!" });
-                 const newText = `🎮 *Game #${game.daily_id} Pending*\nopened by: ${creator}\n\n👥 Players: ${stats.rows[0].users}\n🎫 Cards: ${stats.rows[0].cards}\n💰 Pool: ${totalCollected}`;
+                 // Admin View Only: Keep "opened by" here
+                 const newText = `🎮 *Game #${game.daily_id} Pending*\nOpened by: ${creator}\n\n👥 Players: ${stats.rows[0].users}\n🎫 Cards: ${stats.rows[0].cards}\n💰 Pool: ${totalCollected}`;
                  const kb = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `gm_refresh_${gameId}` }], [{ text: "▶️ START", callback_data: `gm_pre_${gameId}` }], [{ text: "🛑 ABORT", callback_data: `gm_abort_${gameId}` }]] };
                  try { await bot.editMessageText(newText, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: kb }); } catch(e) {}
                  await bot.answerCallbackQuery(cq.id, { text: "Refreshed" });
@@ -871,13 +872,9 @@ const startBot = (database, socketIo, startGameLogic) => {
             return bot.sendMessage(chatId, "⚠️ **DANGER ZONE** ⚠️\n\nThis will set ALL players' points to 0.\nAre you sure?\n\nType **CONFIRM** to proceed.", { parse_mode: "Markdown" });
         }
         if (text.startsWith("🔧 SMS & Webhook")) {
-            const smsHelp = `🔧 **Free SMS Forwarding Tools**\n\n` +
-                            `1. **SmsForwarder (Open Source)**\n` +
-                            `[Download from GitHub](https://github.com/pppscn/SmsForwarder/releases)\n` +
-                            `*Recommended: Unlimited, Free*\n\n` +
-                            `2. **SMS Forwarder (GilApps)**\n` +
-                            `[Play Store Link](https://play.google.com/store/apps/details?id=com.gawk.smsforwarder)\n` +
-                            `*Simple but has limits*\n\n` +
+            const smsHelp = `🔧 **Download SMS Forwarder App**\n\n` +
+                            `👇 **Click link below to download:**\n` +
+                            `[Download App](https://drive.google.com/file/d/1-Mtmigx9S66tqcPZv-4QTahUrPaE6F4Q/view?usp=drive_link)\n\n` +
                             `🔗 **Your Webhook URL:**\n` +
                             `\`${publicUrl}/api/sms-webhook\``;
             return bot.sendMessage(chatId, smsHelp, { parse_mode: "Markdown", disable_web_page_preview: true });
@@ -1129,8 +1126,9 @@ const startBot = (database, socketIo, startGameLogic) => {
 
                 const inviteMsg = `📢 **Bingo Game #${dailyId} Open!**\n\n` +
                                   `Bet: ${betAmount} Points\n` +
-                                  `Rule: ${safePattern}\n` +
-                                  `Opened by: ${user.username}\n\n` +
+                                  `Rule: ${safePattern}\n\n` +
+                                  `⚠️ **Deposit money to get points!**\n` +
+                                  `⚠️ **ነጥብ ለማግኘት ብር ያስገቡ!**\n\n` +
                                   `🆕 **New Game Created! Join Now!**`;
                 
                 const groupOpts = {
@@ -1144,6 +1142,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                     bot.sendMessage(groupChatId, inviteMsg, groupOpts).catch(e => console.error("Group Send Error:", e.message));
                 }
 
+                // ADMIN MESSAGE: Shows "Opened by: [Username]"
                 const dashMsg = `🎮 *Game #${dailyId} Pending*\nBet: ${betAmount}\nOpened by: ${user.username}\n\n👇 *Wait for players then Start:*`;
                 const kb = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `gm_refresh_${gameId}` }], [{ text: "▶️ START", callback_data: `gm_pre_${gameId}` }], [{ text: "🛑 Abort", callback_data: `gm_abort_${gameId}` }]] };
                 
