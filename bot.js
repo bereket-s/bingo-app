@@ -91,7 +91,8 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "➕ Bulk Add" }, { text: "🔄 Reset" }],
           [{ text: "📊 Daily Stats" }, { text: "📋 Transactions" }],
           [{ text: "📈 Global Stats" }, { text: "📢 Broadcast Group Link" }],
-          [{ text: "⚠️ Reset All Points" }, { text: "🔧 SMS Tools" }] 
+          [{ text: "⚠️ Reset All Points" }, { text: "🔧 SMS & Webhook" }],
+          [{ text: "📱 App Link" }]
       ],
       resize_keyboard: true,
       persistent: true
@@ -617,6 +618,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
+    const tgId = msg.from.id; // Added to fix ReferenceError
     const text = msg.text;
     if (!text) return;
 
@@ -661,7 +663,7 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ Guide", "🗑️ Delete User", "🔧 SMS Tools"];
+    const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ Guide", "🗑️ Delete User", "🔧 SMS & Webhook", "📱 App Link"];
     if (mainMenuButtons.some(btn => text.startsWith(btn))) {
         if (chatStates[chatId]) delete chatStates[chatId];
     }
@@ -868,7 +870,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             chatStates[chatId] = { step: 'awaiting_reset_confirm' };
             return bot.sendMessage(chatId, "⚠️ **DANGER ZONE** ⚠️\n\nThis will set ALL players' points to 0.\nAre you sure?\n\nType **CONFIRM** to proceed.", { parse_mode: "Markdown" });
         }
-        if (text.startsWith("🔧 SMS Tools")) {
+        if (text.startsWith("🔧 SMS & Webhook")) {
             const smsHelp = `🔧 **Free SMS Forwarding Tools**\n\n` +
                             `1. **SmsForwarder (Open Source)**\n` +
                             `[Download from GitHub](https://github.com/pppscn/SmsForwarder/releases)\n` +
@@ -879,6 +881,10 @@ const startBot = (database, socketIo, startGameLogic) => {
                             `🔗 **Your Webhook URL:**\n` +
                             `\`${publicUrl}/api/sms-webhook\``;
             return bot.sendMessage(chatId, smsHelp, { parse_mode: "Markdown", disable_web_page_preview: true });
+        }
+        if (text.startsWith("📱 App Link")) {
+             if (!publicUrl) return bot.sendMessage(chatId, "❌ Public URL not set in .env");
+             return bot.sendMessage(chatId, `📱 **Bingo App Link:**\n${publicUrl}\n\n_Click to open or copy._`, { parse_mode: "Markdown" });
         }
         if (text.startsWith("📜 Players")) {
              try {
