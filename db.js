@@ -25,7 +25,8 @@ async function initializeDatabase() {
 
         // Core Tables
         await client.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, telegram_id BIGINT UNIQUE, username VARCHAR(255) NOT NULL, points INTEGER DEFAULT 0, role VARCHAR(20) DEFAULT 'player', session_token VARCHAR(255) UNIQUE, phone_number VARCHAR(50), has_auto_daub BOOLEAN DEFAULT FALSE, pref_auto_daub BOOLEAN DEFAULT TRUE, pref_auto_bingo BOOLEAN DEFAULT TRUE, premium_expires_at TIMESTAMP WITH TIME ZONE, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
-        await client.query(`CREATE TABLE IF NOT EXISTS games (id SERIAL PRIMARY KEY, status VARCHAR(50) NOT NULL DEFAULT 'idle', bet_amount INTEGER NOT NULL DEFAULT 0, pot INTEGER NOT NULL DEFAULT 0, winning_pattern VARCHAR(50) DEFAULT 'any_line', winner_id INTEGER REFERENCES users(id), created_by VARCHAR(255), created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
+        // Added creator_id to games to track specific admin permissions
+        await client.query(`CREATE TABLE IF NOT EXISTS games (id SERIAL PRIMARY KEY, status VARCHAR(50) NOT NULL DEFAULT 'idle', bet_amount INTEGER NOT NULL DEFAULT 0, pot INTEGER NOT NULL DEFAULT 0, winning_pattern VARCHAR(50) DEFAULT 'any_line', winner_id INTEGER REFERENCES users(id), created_by VARCHAR(255), creator_id BIGINT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS player_cards (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), game_id INTEGER NOT NULL REFERENCES games(id), card_data JSONB NOT NULL, original_card_id INTEGER, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, game_id, id));`);
         await client.query(`CREATE TABLE IF NOT EXISTS deposits (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), telegram_id BIGINT, amount INTEGER NOT NULL, proof_image_id VARCHAR(255), status VARCHAR(50) DEFAULT 'pending', request_type VARCHAR(50) DEFAULT 'points', package_duration VARCHAR(50), admin_msg_ids JSONB, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS withdrawal_requests (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), telegram_id BIGINT, amount INTEGER NOT NULL, bank_details TEXT, status VARCHAR(50) DEFAULT 'pending', admin_msg_ids JSONB, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
@@ -41,6 +42,9 @@ async function initializeDatabase() {
                 END IF;
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'games' AND column_name = 'created_by') THEN
                     ALTER TABLE games ADD COLUMN created_by VARCHAR(255);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'games' AND column_name = 'creator_id') THEN
+                    ALTER TABLE games ADD COLUMN creator_id BIGINT;
                 END IF;
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'pref_auto_daub') THEN
                     ALTER TABLE users ADD COLUMN pref_auto_daub BOOLEAN DEFAULT TRUE;
@@ -105,7 +109,7 @@ async function linkTelegramAccount(phone, tgId, username) {
             return { user: updatedUser.rows[0], status: 'profile_updated' };
         }
         else {
-            // UPDATED: Start with 0 points (was 100)
+            // UPDATED: Start with 0 points
             const newUser = await pool.query('INSERT INTO users (phone_number, telegram_id, username, points) VALUES ($1, $2, $3, 0) RETURNING *', [phone, tgId, username]);
             return { user: newUser.rows[0], status: 'new_user_created' };
         }
