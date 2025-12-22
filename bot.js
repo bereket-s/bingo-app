@@ -101,7 +101,7 @@ const startBot = (database, socketIo, startGameLogic) => {
   const superAdminKeyboard = {
       keyboard: [
           ...adminKeyboard.keyboard, 
-          [{ text: "📢 Announce Game Day" }],
+          [{ text: "📢 Announce Game Day" }], // NEW BUTTON
           [{ text: "👑 Promote Admin" }, { text: "🔻 Demote Admin" }] 
       ],
       resize_keyboard: true,
@@ -220,8 +220,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       const msg = `🎮 *GAME #${dailyId} OPEN!* / *ጨዋታ #${dailyId} ተከፍቷል!*\n\n` +
                   `💰 Prize: *${prize}*\n` +
                   `📜 Rule: *${safePattern}*\n\n` +
-                  `⚠️ **Deposit money to get points!**\n` +
-                  `⚠️ **ነጥብ ለማግኘት ብር ያስገቡ!**\n\n` +
                   `🚀 *Join quickly before it starts!* \n` +
                   `🚀 *ጨዋታው ከመጀመሩ በፊት ይቀላቀሉ!*`;
       
@@ -459,16 +457,17 @@ const startBot = (database, socketIo, startGameLogic) => {
             const cmd = parts[1];
             const gameId = parseInt(parts[2]);
             
-            // Fetch game including creator_id
+            // Fetch game details securely
             const gameRes = await db.query("SELECT bet_amount, status, pot, winning_pattern, daily_id, created_by, creator_id FROM games WHERE id = $1", [gameId]);
             if (gameRes.rows.length === 0) return bot.answerCallbackQuery(cq.id, { text: "Game not found" });
             const game = gameRes.rows[0];
             
-            // SECURITY CHECK: Only allow Creator OR Super Admin to manage
+            // --- SECURITY CHECK ---
+            // Only allow the CREATOR of the game OR the SUPER ADMIN to manage (Start/Abort/SetPrize)
             const isCreator = String(game.creator_id) === String(tgId);
             const isSuper = await isSuperAdmin(tgId);
 
-            // Refreshes are safe for anyone to click, but Actions (Start/Abort/SetPrize) are restricted
+            // "Refresh" is safe for all admins. Action buttons are restricted.
             if (cmd !== 'refresh' && !isCreator && !isSuper) {
                 return bot.answerCallbackQuery(cq.id, { text: "⛔ Permission Denied: Only the Creator or Super Admin can manage this game.", show_alert: true });
             }
@@ -479,7 +478,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
             if (cmd === 'refresh') {
                  if(game.status !== 'pending') return bot.answerCallbackQuery(cq.id, { text: "Game started/finished!" });
-                 // Admin Panel Info (shows Creator)
+                 // Shows creator in Admin Panel so they know who owns it
                  const newText = `🎮 *Game #${game.daily_id} Pending*\nOpened by: ${creator}\n\n👥 Players: ${stats.rows[0].users}\n🎫 Cards: ${stats.rows[0].cards}\n💰 Pool: ${totalCollected}`;
                  const kb = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `gm_refresh_${gameId}` }], [{ text: "▶️ START", callback_data: `gm_pre_${gameId}` }], [{ text: "🛑 ABORT", callback_data: `gm_abort_${gameId}` }]] };
                  try { await bot.editMessageText(newText, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: kb }); } catch(e) {}
@@ -547,6 +546,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                     if (decision === 'approve') {
                         await db.query("UPDATE deposits SET status = 'approved' WHERE id = $1", [targetId]);
                         await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [parseInt(val), deposit.user_id]);
+                        
                         await db.logTransaction(deposit.user_id, 'deposit', parseInt(val), null, null, `Deposit Approved by ${adminUser?.username}`);
                         
                         const doneText = `✅ *APPROVED by ${adminUser?.username}*\n+${val} Points\n(User: ${deposit.user_id})`;
@@ -625,7 +625,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const tgId = msg.from.id; // Correctly defined here
+    const tgId = msg.from.id; // Fixed reference error
     const text = msg.text;
     if (!text) return;
 
@@ -640,6 +640,7 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
+    // --- SUPER ADMIN ANNOUNCEMENT BUTTON ---
     if (text === "📢 Announce Game Day") {
         if (await isSuperAdmin(tgId)) {
             const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
@@ -648,6 +649,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
             bot.sendMessage(chatId, "📢 Sending Game Day Announcement to ALL players...");
 
+            // The content of the announcement
             const fancyMsg = `🔥 **GAME DAY IS HERE!** 🔥\n` +
                              `**ጨዋታው ዛሬ ይጀምራል!**\n\n` +
                              `💰 **Deposit Money NOW to get points!**\n` +
@@ -659,7 +661,8 @@ const startBot = (database, socketIo, startGameLogic) => {
                 parse_mode: "Markdown", 
                 reply_markup: { 
                     inline_keyboard: [
-                        [{ text: "🏦 Deposit / ብር አስገባ", callback_data: "dummy_deposit" }], // Callback handled or just visual
+                        // "dummy_deposit" is just a visual placeholder to prompt them to use the Deposit menu
+                        [{ text: "🏦 Deposit / ብር አስገባ", callback_data: "dummy_deposit" }], 
                         [{ text: "📢 JOIN GROUP / ግሩፕ", url: link }]
                     ] 
                 } 
@@ -671,7 +674,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 try {
                     await bot.sendMessage(u.telegram_id, fancyMsg, opts);
                     count++;
-                    await new Promise(r => setTimeout(r, 50)); 
+                    await new Promise(r => setTimeout(r, 50)); // Delay to prevent flooding
                 } catch(e) {}
             }
             bot.sendMessage(chatId, `✅ Announcement sent to ${count} users.`);
@@ -1040,9 +1043,9 @@ const startBot = (database, socketIo, startGameLogic) => {
                 delete chatStates[chatId]; 
 
                 if (result.error) {
-                     // IMPROVED ERROR REPORTING HERE
-                     bot.sendMessage(chatId, `❌ **Registration Failed:**\n${result.error}\n\nPlease try /start again with a different username.`, { reply_markup: userKeyboard, parse_mode: "Markdown" });
+                     bot.sendMessage(chatId, `❌ **Error:** ${result.error}\n\nTry /start again.`, { reply_markup: userKeyboard });
                 } else {
+                     // JOIN GROUP BUTTON
                      const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
                      const groupUrl = groupRes.rows[0]?.value;
                      const opts = { parse_mode: "Markdown" };
@@ -1065,6 +1068,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 bot.sendMessage(chatId, `📸 **Send Screenshot** or Reply with Transaction ID:`);
             }
             else if (state.step === 'awaiting_deposit_proof') {
+                // Manual text proof logic (if not photo)
                 const txnCode = text.trim();
                 const txnRes = await db.query("SELECT * FROM bank_transactions WHERE txn_code = $1", [txnCode]);
                 if (txnRes.rows.length > 0 && txnRes.rows[0].status !== 'claimed') {
@@ -1093,17 +1097,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             else if (state.step === 'awaiting_bank_details') {
                 const amount = state.withdrawAmount;
                 const user = await getUser(tgId);
-                
-                // Deduct points immediately
                 await db.query("UPDATE users SET points = points - $1 WHERE id = $2", [amount, user.id]);
-                
-                // Create Withdrawal Request Record
-                const res = await db.query(
-                    "INSERT INTO withdrawal_requests (user_id, telegram_id, amount, bank_details, status) VALUES ($1, $2, $3, $4, 'pending') RETURNING id",
-                    [user.id, tgId, amount, text]
-                );
-                const wdId = res.rows[0].id;
-
                 delete chatStates[chatId];
                 bot.sendMessage(chatId, "✅ **Request Sent**", { reply_markup: userKeyboard }).catch(()=>{});
                 
@@ -1111,11 +1105,8 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const safeInfo = escapeMarkdown(text);
                 const adminMsg = `🚨 *Withdrawal*\nUser: ${safeUser}\nAmt: ${amount}\nInfo: ${safeInfo}`;
                 
-                const markup = { inline_keyboard: [[{ text: "Approve", callback_data: `wd_approve_${wdId}_${amount}` }], [{ text: "Reject", callback_data: `wd_reject_${wdId}_${amount}` }]] };
-                
-                // Broadcast to Admins & Save IDs
-                const adminMsgIds = await broadcastToAdmins(adminMsg, { parse_mode: "Markdown", reply_markup: markup });
-                await db.query("UPDATE withdrawal_requests SET admin_msg_ids = $1 WHERE id = $2", [JSON.stringify(adminMsgIds), wdId]);
+                const markup = { inline_keyboard: [[{ text: "Approve", callback_data: `wd_approve_${tgId}_${amount}` }], [{ text: "Reject", callback_data: `wd_reject_${tgId}_${amount}` }]] };
+                broadcastToAdmins(adminMsg, { parse_mode: "Markdown", reply_markup: markup });
             }
             else if (state.step === 'awaiting_transfer_username') {
                 const res = await db.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [text.trim()]);
@@ -1177,6 +1168,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                                   `⚠️ **ነጥብ ለማግኘት ብር ያስገቡ!**\n\n` +
                                   `🆕 **New Game Created! Join Now!**`;
                 
+                // Send URL as button
                 const groupOpts = {
                     parse_mode: "Markdown",
                     reply_markup: {
@@ -1184,6 +1176,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                     }
                 };
 
+                // Removed strict check on ID format to allow flexibility
                 if (groupChatId) {
                     bot.sendMessage(groupChatId, inviteMsg, groupOpts).catch(e => console.error("Group Send Error:", e.message));
                 }
