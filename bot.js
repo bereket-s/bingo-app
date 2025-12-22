@@ -101,7 +101,7 @@ const startBot = (database, socketIo, startGameLogic) => {
   const superAdminKeyboard = {
       keyboard: [
           ...adminKeyboard.keyboard, 
-          [{ text: "📢 Announce Game Day" }], // NEW BUTTON
+          [{ text: "📢 Announce Game Day" }],
           [{ text: "👑 Promote Admin" }, { text: "🔻 Demote Admin" }] 
       ],
       resize_keyboard: true,
@@ -220,6 +220,8 @@ const startBot = (database, socketIo, startGameLogic) => {
       const msg = `🎮 *GAME #${dailyId} OPEN!* / *ጨዋታ #${dailyId} ተከፍቷል!*\n\n` +
                   `💰 Prize: *${prize}*\n` +
                   `📜 Rule: *${safePattern}*\n\n` +
+                  `⚠️ **Deposit money to get points!**\n` +
+                  `⚠️ **ነጥብ ለማግኘት ብር ያስገቡ!**\n\n` +
                   `🚀 *Join quickly before it starts!* \n` +
                   `🚀 *ጨዋታው ከመጀመሩ በፊት ይቀላቀሉ!*`;
       
@@ -435,6 +437,16 @@ const startBot = (database, socketIo, startGameLogic) => {
     const adminUser = await getUser(tgId);
 
     try {
+        // --- NEW: DUMMY DEPOSIT HANDLER ---
+        // Triggered by the "Deposit" button in the Announcement
+        if (action === 'dummy_deposit') {
+            const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
+            chatStates[chatId] = { step: 'awaiting_deposit_amount' };
+            bot.sendMessage(chatId, `🏦 *Bank Info*\n${bankRes.rows[0]?.value || 'Contact Admin'}\n\n👇 *Enter Amount:*`, { parse_mode: "Markdown", reply_markup: { force_reply: true } });
+            await bot.answerCallbackQuery(cq.id);
+            return;
+        }
+
         if (action.startsWith('pkg_')) {
             const duration = action.replace('pkg_', '');
             chatStates[chatId] = { step: 'awaiting_premium_proof', duration: duration };
@@ -457,17 +469,14 @@ const startBot = (database, socketIo, startGameLogic) => {
             const cmd = parts[1];
             const gameId = parseInt(parts[2]);
             
-            // Fetch game details securely
             const gameRes = await db.query("SELECT bet_amount, status, pot, winning_pattern, daily_id, created_by, creator_id FROM games WHERE id = $1", [gameId]);
             if (gameRes.rows.length === 0) return bot.answerCallbackQuery(cq.id, { text: "Game not found" });
             const game = gameRes.rows[0];
             
-            // --- SECURITY CHECK ---
-            // Only allow the CREATOR of the game OR the SUPER ADMIN to manage (Start/Abort/SetPrize)
+            // SECURITY CHECK: Only allow Creator OR Super Admin
             const isCreator = String(game.creator_id) === String(tgId);
             const isSuper = await isSuperAdmin(tgId);
 
-            // "Refresh" is safe for all admins. Action buttons are restricted.
             if (cmd !== 'refresh' && !isCreator && !isSuper) {
                 return bot.answerCallbackQuery(cq.id, { text: "⛔ Permission Denied: Only the Creator or Super Admin can manage this game.", show_alert: true });
             }
@@ -478,7 +487,6 @@ const startBot = (database, socketIo, startGameLogic) => {
 
             if (cmd === 'refresh') {
                  if(game.status !== 'pending') return bot.answerCallbackQuery(cq.id, { text: "Game started/finished!" });
-                 // Shows creator in Admin Panel so they know who owns it
                  const newText = `🎮 *Game #${game.daily_id} Pending*\nOpened by: ${creator}\n\n👥 Players: ${stats.rows[0].users}\n🎫 Cards: ${stats.rows[0].cards}\n💰 Pool: ${totalCollected}`;
                  const kb = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `gm_refresh_${gameId}` }], [{ text: "▶️ START", callback_data: `gm_pre_${gameId}` }], [{ text: "🛑 ABORT", callback_data: `gm_abort_${gameId}` }]] };
                  try { await bot.editMessageText(newText, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: kb }); } catch(e) {}
@@ -546,7 +554,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                     if (decision === 'approve') {
                         await db.query("UPDATE deposits SET status = 'approved' WHERE id = $1", [targetId]);
                         await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [parseInt(val), deposit.user_id]);
-                        
                         await db.logTransaction(deposit.user_id, 'deposit', parseInt(val), null, null, `Deposit Approved by ${adminUser?.username}`);
                         
                         const doneText = `✅ *APPROVED by ${adminUser?.username}*\n+${val} Points\n(User: ${deposit.user_id})`;
@@ -625,7 +632,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const tgId = msg.from.id; // Fixed reference error
+    const tgId = msg.from.id; 
     const text = msg.text;
     if (!text) return;
 
@@ -640,7 +647,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    // --- SUPER ADMIN ANNOUNCEMENT BUTTON ---
     if (text === "📢 Announce Game Day") {
         if (await isSuperAdmin(tgId)) {
             const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
@@ -649,7 +655,6 @@ const startBot = (database, socketIo, startGameLogic) => {
 
             bot.sendMessage(chatId, "📢 Sending Game Day Announcement to ALL players...");
 
-            // The content of the announcement
             const fancyMsg = `🔥 **GAME DAY IS HERE!** 🔥\n` +
                              `**ጨዋታው ዛሬ ይጀምራል!**\n\n` +
                              `💰 **Deposit Money NOW to get points!**\n` +
@@ -661,7 +666,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 parse_mode: "Markdown", 
                 reply_markup: { 
                     inline_keyboard: [
-                        // "dummy_deposit" is just a visual placeholder to prompt them to use the Deposit menu
                         [{ text: "🏦 Deposit / ብር አስገባ", callback_data: "dummy_deposit" }], 
                         [{ text: "📢 JOIN GROUP / ግሩፕ", url: link }]
                     ] 
@@ -674,7 +678,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 try {
                     await bot.sendMessage(u.telegram_id, fancyMsg, opts);
                     count++;
-                    await new Promise(r => setTimeout(r, 50)); // Delay to prevent flooding
+                    await new Promise(r => setTimeout(r, 50)); 
                 } catch(e) {}
             }
             bot.sendMessage(chatId, `✅ Announcement sent to ${count} users.`);
@@ -1305,6 +1309,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 delete chatStates[chatId];
             }
 
+            // --- SUPER ADMIN STATE HANDLERS ---
             else if (state.step === 'awaiting_promote_username') {
                  const targetUsername = text.trim();
                  const userRes = await db.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [targetUsername]);
