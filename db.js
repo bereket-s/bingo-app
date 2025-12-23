@@ -33,7 +33,7 @@ async function initializeDatabase() {
         await client.query(`CREATE TABLE IF NOT EXISTS transactions (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), type VARCHAR(50) NOT NULL, amount INTEGER NOT NULL, related_user_id INTEGER, game_id INTEGER, description TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS system_settings (key VARCHAR(50) PRIMARY KEY, value TEXT);`);
 
-        // Migrations / Updates
+        // Migrations
         await client.query(`
             DO $$ BEGIN
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'games' AND column_name = 'daily_id') THEN
@@ -60,6 +60,9 @@ async function initializeDatabase() {
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deposits' AND column_name = 'admin_msg_ids') THEN
                     ALTER TABLE deposits ADD COLUMN admin_msg_ids JSONB;
                 END IF;
+                
+                -- Force Points Default to 0 for new users in case table existed before
+                ALTER TABLE users ALTER COLUMN points SET DEFAULT 0;
             END $$;
         `);
 
