@@ -1,5 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const Tesseract = require('tesseract.js'); // REQUIRED for Image Reading
+const Tesseract = require('tesseract.js'); 
 const { getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback } = require('./gameManager'); 
 const db = require('./db'); 
 const dayjs = require('dayjs');
@@ -13,22 +13,6 @@ const cleanPhone = (p) => p ? p.replace(/\D/g, '') : '';
 const escapeMarkdown = (text) => {
     if (!text) return '';
     return String(text).replace(/[_*[\]()`]/g, '\\$&');
-};
-
-// --- HELPER: NORMALIZE TEXT FOR OCR MATCHING ---
-// Converts look-alike characters to a standard format to fix reading errors
-const normalizeOCR = (str) => {
-    if (!str) return '';
-    return str.toUpperCase()
-        .replace(/O/g, '0') // Letter O -> Number 0
-        .replace(/D/g, '0') // Letter D -> Number 0
-        .replace(/I/g, '1') // Letter I -> Number 1
-        .replace(/L/g, '1') // Letter L -> Number 1
-        .replace(/Z/g, '2') // Letter Z -> Number 2
-        .replace(/S/g, '5') // Letter S -> Number 5
-        .replace(/B/g, '8') // Letter B -> Number 8
-        .replace(/G/g, '6') // Letter G -> Number 6
-        .replace(/[^0-9A-Z]/g, ''); // Remove everything else
 };
 
 const startBot = (database, socketIo, startGameLogic) => {
@@ -275,6 +259,7 @@ const startBot = (database, socketIo, startGameLogic) => {
           } 
       };
       
+      // Cleanup group messages
       try {
           const oldWinnerMsgId = await getMsgId('last_winner_msg_id');
           const chatId = await getGroupId();
@@ -395,39 +380,35 @@ const startBot = (database, socketIo, startGameLogic) => {
         const user = await getUser(tgId);
         if (!user) return delete chatStates[chatId];
 
-        // --- IMPROVED OCR (NORMALIZED MATCHING) ---
+        // --- IMPROVED OCR (SIMPLE MATCHING) ---
+        // This relies on the webhook having already saved the SMS to the DB
         if (state.step === 'awaiting_deposit_proof') {
             const scanMsg = await bot.sendMessage(chatId, "🔍 **Scanning receipt... Please wait.**", { parse_mode: "Markdown" });
             try {
                 const fileLink = await bot.getFileLink(fileId);
                 const { data: { text } } = await Tesseract.recognize(fileLink, 'eng');
                 
-                // 1. Get raw OCR text
-                console.log(`[OCR DEBUG] Raw Text for ${user.username}:`, text);
+                // 1. Clean the OCR text: Upper case, remove all non-alphanumeric chars
+                const cleanOCR = text.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                console.log(`[OCR RAW] ${cleanOCR}`);
 
-                // 2. Normalize OCR Text (Fix typical OCR errors like 8 for B, 0 for O)
-                const normalizedOCR = normalizeOCR(text);
-                console.log(`[OCR DEBUG] Normalized Text:`, normalizedOCR);
-                
-                // 3. Fetch Pending Transactions
+                // 2. Fetch Pending Transactions
                 const pendingTxns = await db.query("SELECT * FROM bank_transactions WHERE status = 'unclaimed'");
                 
                 let foundTxn = null;
                 for (const txn of pendingTxns.rows) {
-                    // 4. Normalize the Database Code too
-                    const normalizedDB = normalizeOCR(txn.txn_code);
+                    // 3. Clean the DB code similarly
+                    const cleanDB = txn.txn_code.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
                     
-                    // 5. Check if the DB code exists inside the Receipt text
-                    // We check if length is sufficient to avoid false positives with short numbers like "100"
-                    if (normalizedDB.length > 5 && normalizedOCR.includes(normalizedDB)) {
+                    // 4. Exact Substring Match: Does the DB code exist inside the OCR text?
+                    if (cleanDB.length > 5 && cleanOCR.includes(cleanDB)) {
                         foundTxn = txn;
-                        console.log(`[OCR MATCH] Found! DB: ${txn.txn_code} matched in image.`);
+                        console.log(`[OCR MATCH] Found code: ${txn.txn_code}`);
                         break;
                     }
                 }
 
                 if (foundTxn) {
-                    // Success!
                     const amount = foundTxn.amount;
                     await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [amount, user.id]);
                     await db.query("UPDATE bank_transactions SET status = 'claimed', claimed_by = $1 WHERE id = $2", [user.id, foundTxn.id]);
@@ -518,8 +499,6 @@ const startBot = (database, socketIo, startGameLogic) => {
     const adminUser = await getUser(tgId);
 
     try {
-        // --- NEW: DUMMY DEPOSIT HANDLER ---
-        // Triggered by the "Deposit" button in the Announcement
         if (action === 'dummy_deposit') {
             const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
             chatStates[chatId] = { step: 'awaiting_deposit_amount' };
@@ -714,7 +693,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const tgId = msg.from.id; 
+    const tgId = msg.from.id; // Added to fix ReferenceError
     const text = msg.text;
     if (!text) return;
 

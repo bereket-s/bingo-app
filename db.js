@@ -8,11 +8,11 @@ const connectionConfig = {
 };
 
 if (!process.env.DATABASE_URL) {
-  connectionConfig.user = process.env.DB_USER ;
-  connectionConfig.host = process.env.DB_HOST ;
-  connectionConfig.database = process.env.DB_NAME ;
-  connectionConfig.password = process.env.DB_PASSWORD ;
-  connectionConfig.port = parseInt(process.env.DB_PORT , 10);
+  connectionConfig.user = process.env.DB_USER || 'postgres';
+  connectionConfig.host = process.env.DB_HOST || 'localhost';
+  connectionConfig.database = process.env.DB_NAME || 'bingo_db';
+  connectionConfig.password = process.env.DB_PASSWORD || '199129';
+  connectionConfig.port = parseInt(process.env.DB_PORT || '5432', 10);
   delete connectionConfig.connectionString;
 }
 
@@ -61,7 +61,7 @@ async function initializeDatabase() {
                     ALTER TABLE deposits ADD COLUMN admin_msg_ids JSONB;
                 END IF;
                 
-                -- Force Points Default to 0 for new users in case table existed before
+                -- Force Points Default to 0 for new users
                 ALTER TABLE users ALTER COLUMN points SET DEFAULT 0;
             END $$;
         `);
