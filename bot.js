@@ -16,7 +16,6 @@ const escapeMarkdown = (text) => {
 };
 
 // --- LEVENSHTEIN DISTANCE (Fuzzy Matching) ---
-// Calculates how many characters are different between two strings
 const getLevenshteinDistance = (a, b) => {
     if (a.length === 0) return b.length;
     if (b.length === 0) return a.length;
@@ -181,7 +180,7 @@ const startBot = (database, socketIo, startGameLogic) => {
       }
   };
 
-  // --- SMART BROADCASTING (Auto-Delete Old Messages) ---
+  // --- SMART BROADCASTING TO ALL USERS (Auto-Delete Old Messages) ---
   const broadcastToAllUsers = async (text, options = {}) => {
       try {
           const allUsers = await db.query("SELECT telegram_id, last_bot_msg_id FROM users WHERE telegram_id IS NOT NULL");
@@ -401,7 +400,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         if (!user) return delete chatStates[chatId];
 
         // --- IMPROVED OCR: SLIDING WINDOW FUZZY MATCH ---
-        // Solves the "3 vs S" problem by allowing 1-3 errors
         if (state.step === 'awaiting_deposit_proof') {
             const scanMsg = await bot.sendMessage(chatId, "🔍 **Scanning receipt... Please wait.**", { parse_mode: "Markdown" });
             try {
@@ -412,28 +410,25 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const cleanOCR = text.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
                 console.log(`[OCR RAW] ${cleanOCR}`);
 
-                // 2. Fetch Pending Transactions
+                // --- CHECK 1: SEARCH IN UNCLAIMED (New Deposit) ---
                 const pendingTxns = await db.query("SELECT * FROM bank_transactions WHERE status = 'unclaimed'");
-                
                 let foundTxn = null;
                 let minDistance = 999;
 
                 for (const txn of pendingTxns.rows) {
-                    // 3. Clean the DB code similarly
                     const dbCode = txn.txn_code.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-                    if (dbCode.length < 5) continue; // Skip too short codes
+                    if (dbCode.length < 5) continue; 
 
-                    // 4. Exact Substring Match (Fast)
+                    // Exact Match
                     if (cleanOCR.includes(dbCode)) {
                         foundTxn = txn;
                         console.log(`[OCR EXACT] Found: ${dbCode}`);
                         break;
                     }
 
-                    // 5. Sliding Window Fuzzy Match (Slower but accurate for "3" vs "S")
+                    // Fuzzy Match (Sliding Window)
                     const windowSize = dbCode.length;
-                    // Allow 30% error rate (e.g. 3 errors in 10 chars is acceptable)
-                    const threshold = Math.ceil(dbCode.length * 0.3);
+                    const threshold = Math.ceil(dbCode.length * 0.3); // 30% tolerance
 
                     for (let i = 0; i <= cleanOCR.length - windowSize; i++) {
                         const window = cleanOCR.substr(i, windowSize);
@@ -448,6 +443,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 }
 
                 if (foundTxn) {
+                    // Success: Deposit Found & Unclaimed
                     const amount = foundTxn.amount;
                     await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [amount, user.id]);
                     await db.query("UPDATE bank_transactions SET status = 'claimed', claimed_by = $1 WHERE id = $2", [user.id, foundTxn.id]);
@@ -457,10 +453,47 @@ const startBot = (database, socketIo, startGameLogic) => {
                     bot.sendMessage(chatId, `✅ **Instant Deposit Success!**\n\nMatched Txn: ${foundTxn.txn_code}\nAmount: ${amount} ETB\n\nPoints Added.`, { reply_markup: userKeyboard });
                     delete chatStates[chatId];
                     return; 
-                } else {
-                    await bot.deleteMessage(chatId, scanMsg.message_id).catch(()=>{});
-                    bot.sendMessage(chatId, "⚠️ Could not auto-read transaction ID. Sending to admin for manual review...");
+                } 
+
+                // --- CHECK 2: SEARCH IN CLAIMED (Duplicate Attempt) ---
+                const claimedTxns = await db.query("SELECT * FROM bank_transactions WHERE status = 'claimed' ORDER BY created_at DESC LIMIT 500");
+                let duplicateTxn = null;
+                minDistance = 999;
+
+                for (const txn of claimedTxns.rows) {
+                     const dbCode = txn.txn_code.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                     if (dbCode.length < 5) continue;
+
+                     if (cleanOCR.includes(dbCode)) {
+                         duplicateTxn = txn;
+                         break;
+                     }
+                     
+                     // Fuzzy Match Check for Duplicates too
+                     const windowSize = dbCode.length;
+                     const threshold = Math.ceil(dbCode.length * 0.3);
+                     
+                     for (let i = 0; i <= cleanOCR.length - windowSize; i++) {
+                        const window = cleanOCR.substr(i, windowSize);
+                        const dist = getLevenshteinDistance(dbCode, window);
+                        if (dist < minDistance && dist <= threshold) {
+                            duplicateTxn = txn;
+                        }
+                     }
                 }
+
+                if (duplicateTxn) {
+                    // REJECT: It's a duplicate!
+                    await bot.deleteMessage(chatId, scanMsg.message_id).catch(()=>{});
+                    bot.sendMessage(chatId, `⚠️ **Duplicate Transaction!**\n\nThe Transaction ID **${duplicateTxn.txn_code}** has already been used.`, { reply_markup: userKeyboard });
+                    delete chatStates[chatId];
+                    return;
+                }
+
+                // --- FALLBACK: Not found in Unclaimed OR Claimed -> Manual Review ---
+                await bot.deleteMessage(chatId, scanMsg.message_id).catch(()=>{});
+                bot.sendMessage(chatId, "⚠️ Could not auto-read transaction ID. Sending to admin for manual review...");
+
             } catch (e) {
                 console.error("OCR Error:", e);
                 // Fallthrough to manual if OCR fails
@@ -538,8 +571,6 @@ const startBot = (database, socketIo, startGameLogic) => {
     const adminUser = await getUser(tgId);
 
     try {
-        // --- NEW: DUMMY DEPOSIT HANDLER ---
-        // Triggered by the "Deposit" button in the Announcement
         if (action === 'dummy_deposit') {
             const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
             chatStates[chatId] = { step: 'awaiting_deposit_amount' };
@@ -574,7 +605,6 @@ const startBot = (database, socketIo, startGameLogic) => {
             if (gameRes.rows.length === 0) return bot.answerCallbackQuery(cq.id, { text: "Game not found" });
             const game = gameRes.rows[0];
             
-            // SECURITY CHECK: Only allow Creator OR Super Admin
             const isCreator = String(game.creator_id) === String(tgId);
             const isSuper = await isSuperAdmin(tgId);
 
