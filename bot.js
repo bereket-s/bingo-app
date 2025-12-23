@@ -1,4 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
+const Tesseract = require('tesseract.js'); // REQUIRED for Image Reading
 const { getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback } = require('./gameManager'); 
 const db = require('./db'); 
 const dayjs = require('dayjs');
@@ -160,7 +161,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       }
   };
 
-  // --- SMART BROADCASTING TO ALL USERS (Auto-Deletes old messages) ---
   const broadcastToAllUsers = async (text, options = {}) => {
       try {
           const allUsers = await db.query("SELECT telegram_id, last_bot_msg_id FROM users WHERE telegram_id IS NOT NULL");
@@ -169,23 +169,19 @@ const startBot = (database, socketIo, startGameLogic) => {
           for (const u of allUsers.rows) {
               const tgId = u.telegram_id;
               
-              // 1. Delete previous old message if exists
               if (u.last_bot_msg_id) {
                   try {
                       await bot.deleteMessage(tgId, u.last_bot_msg_id);
-                  } catch (e) { /* Ignore error if too old or deleted */ }
+                  } catch (e) { }
               }
 
-              // 2. Send new message
               try {
                   const sent = await bot.sendMessage(tgId, text, { parse_mode: "Markdown", ...options });
-                  
-                  // 3. Save new message ID
                   await db.query("UPDATE users SET last_bot_msg_id = $1 WHERE telegram_id = $2", [sent.message_id, tgId]);
                   count++;
-              } catch (e) { /* Blocked bot, etc */ }
+              } catch (e) { }
               
-              await new Promise(r => setTimeout(r, 40)); // Rate limit
+              await new Promise(r => setTimeout(r, 40)); 
           }
           return count;
       } catch (e) { console.error("Broadcast All Error:", e); return 0; }
@@ -230,18 +226,10 @@ const startBot = (database, socketIo, startGameLogic) => {
       
       for (const [adminIdStr, msgId] of Object.entries(adminMsgIds)) {
           const adminId = parseInt(adminIdStr);
-          if (adminId === activeAdminId) {
-              try {
-                  await bot.editMessageCaption(newCaption, { chat_id: adminId, message_id: msgId, parse_mode: "Markdown", reply_markup: { inline_keyboard: [] } });
-              } catch(e) {
-                   try { await bot.editMessageText(newCaption, { chat_id: adminId, message_id: msgId, parse_mode: "Markdown", reply_markup: { inline_keyboard: [] } }); } catch(ex){}
-              }
-          } else {
-              try {
-                  await bot.editMessageCaption(newCaption, { chat_id: adminId, message_id: msgId, parse_mode: "Markdown", reply_markup: { inline_keyboard: [] } });
-              } catch(e) {
-                   try { await bot.editMessageText(newCaption, { chat_id: adminId, message_id: msgId, parse_mode: "Markdown", reply_markup: { inline_keyboard: [] } }); } catch(ex){}
-              }
+          try {
+              await bot.editMessageCaption(newCaption, { chat_id: adminId, message_id: msgId, parse_mode: "Markdown", reply_markup: { inline_keyboard: [] } });
+          } catch(e) {
+               try { await bot.editMessageText(newCaption, { chat_id: adminId, message_id: msgId, parse_mode: "Markdown", reply_markup: { inline_keyboard: [] } }); } catch(ex){}
           }
       }
   };
@@ -264,7 +252,6 @@ const startBot = (database, socketIo, startGameLogic) => {
           } 
       };
       
-      // Cleanup old group messages
       try {
           const oldWinnerMsgId = await getMsgId('last_winner_msg_id');
           const chatId = await getGroupId();
@@ -274,11 +261,9 @@ const startBot = (database, socketIo, startGameLogic) => {
           if (oldJoinMsgId && chatId) await bot.deleteMessage(chatId, oldJoinMsgId).catch(() => {});
       } catch(e) {}
 
-      // 1. Send to Group
       const newMsgId = await broadcastToGroup(msg, opts);
       if(newMsgId) await saveMsgId('last_join_msg_id', newMsgId);
 
-      // 2. Broadcast to ALL USERS (Auto-Deletes old user messages)
       await broadcastToAllUsers(msg, opts);
   });
 
@@ -291,18 +276,15 @@ const startBot = (database, socketIo, startGameLogic) => {
       
       broadcastToAdmins(msg, { parse_mode: "Markdown" });
       
-      // Cleanup group join button
       try {
           const oldJoinMsgId = await getMsgId('last_join_msg_id');
           const chatId = await getGroupId();
           if (oldJoinMsgId && chatId) await bot.deleteMessage(chatId, oldJoinMsgId).catch(() => {});
       } catch(e) {}
 
-      // 1. Send to Group
       const newMsgId = await broadcastToGroup(msg);
       if(newMsgId) await saveMsgId('last_winner_msg_id', newMsgId);
 
-      // 2. Broadcast to ALL USERS
       await broadcastToAllUsers(msg);
   });
 
@@ -324,7 +306,7 @@ const startBot = (database, socketIo, startGameLogic) => {
              `• Click **'🏦 Deposit'** in the bot.\n` +
              `• Send money to the provided Bank/Telebirr account.\n` +
              `• Send the **Transaction ID** or **Screenshot** to the bot.\n` +
-             `• Admins will verify and add points to your account.`;
+             `• Our system will verify and add points automatically!`;
   };
 
   const triggerStart = async (chatId, user) => {
@@ -378,47 +360,81 @@ const startBot = (database, socketIo, startGameLogic) => {
     }
   });
 
+  // --- AUTOMATED PHOTO HANDLER WITH OCR ---
   bot.on('photo', async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
     const state = chatStates[chatId];
     if (!state) return;
 
-    if (state.step === 'awaiting_deposit_proof' || state.step === 'awaiting_premium_proof') {
+    if (state.step === 'awaiting_deposit_proof') {
         const photo = msg.photo[msg.photo.length - 1]; 
         const fileId = photo.file_id;
         const user = await getUser(tgId);
         if (!user) return delete chatStates[chatId];
 
-        let amount = 0;
-        let type = 'points';
-        let duration = null;
+        const amount = state.amount;
 
-        if (state.step === 'awaiting_deposit_proof') amount = state.amount;
-        else { type = 'premium'; duration = state.duration; amount = 0; }
+        // 1. Notify User we are checking
+        bot.sendMessage(chatId, "⏳ *Scanning receipt...* Please wait.", { parse_mode: "Markdown" });
 
         try {
+            // 2. Get Image URL and Read Text
+            const fileLink = await bot.getFileLink(fileId);
+            const { data: { text } } = await Tesseract.recognize(fileLink, 'eng');
+            
+            // 3. Clean and Prepare Text
+            // We remove special characters to make matching easier
+            const cleanedText = text.replace(/[^a-zA-Z0-9]/g, ' ').toUpperCase();
+            console.log(`[OCR] Scanned: ${cleanedText.substring(0, 50)}...`);
+
+            // 4. Check Database (bank_transactions table populated by SMS App)
+            // We search for any pending transaction with matching Amount AND matching ID in the text
+            const dbCheck = await db.query(
+                `SELECT * FROM bank_transactions 
+                 WHERE status = 'pending' 
+                 AND amount = $1 
+                 AND position(txn_code in $2) > 0`, 
+                [amount, cleanedText]
+            );
+
+            if (dbCheck.rows.length > 0) {
+                // --- MATCH FOUND: AUTO APPROVE ---
+                const matchedTxn = dbCheck.rows[0];
+                
+                await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [amount, user.id]);
+                await db.query("UPDATE bank_transactions SET status = 'claimed', claimed_by = $1 WHERE id = $2", [user.id, matchedTxn.id]);
+                
+                await db.query(
+                    "INSERT INTO deposits (user_id, telegram_id, amount, proof_image_id, status, request_type) VALUES ($1, $2, $3, $4, 'approved', 'points')",
+                    [user.id, tgId, amount, fileId]
+                );
+
+                bot.sendMessage(chatId, `✅ **AUTO-VERIFIED!**\n\nTransaction: ${matchedTxn.txn_code}\nPoints Added: +${amount}`, { reply_markup: userKeyboard, parse_mode: "Markdown" });
+                delete chatStates[chatId];
+                return; // Done!
+            }
+        } catch (err) {
+            console.error("OCR Check Error:", err);
+        }
+
+        // --- FALLBACK: MANUAL ADMIN APPROVAL ---
+        // If OCR fails or no match found, forward to admin as usual
+        try {
+            bot.sendMessage(chatId, "⚠️ Could not auto-verify. Sent to admins for manual check.", { parse_mode: "Markdown" });
+
             const res = await db.query(
-                "INSERT INTO deposits (user_id, telegram_id, amount, proof_image_id, status, request_type, package_duration) VALUES ($1, $2, $3, $4, 'pending', $5, $6) RETURNING id",
-                [user.id, tgId, amount, fileId, type, duration]
+                "INSERT INTO deposits (user_id, telegram_id, amount, proof_image_id, status, request_type) VALUES ($1, $2, $3, $4, 'pending', 'points') RETURNING id",
+                [user.id, tgId, amount, fileId]
             );
             const depId = res.rows[0].id;
-            bot.sendMessage(chatId, "✅ *Proof Received!*\nSent to admins for approval.", { parse_mode: "Markdown", reply_markup: userKeyboard });
-            
-            let caption = "";
-            let callbackPrefix = "";
-            if (type === 'points') {
-                caption = `💰 *New Deposit*\nUser: ${escapeMarkdown(user.username)}\nAmount: ${amount}`;
-                callbackPrefix = "dep";
-            } else {
-                caption = `🌟 *New Premium*\nUser: ${escapeMarkdown(user.username)}\nDuration: ${duration}`;
-                callbackPrefix = "prem";
-            }
 
+            const caption = `💰 *New Deposit (Manual Check)*\nUser: ${escapeMarkdown(user.username)}\nAmount: ${amount}\n\n_Bot could not find matching SMS._`;
+            
             const markup = {
                 inline_keyboard: [
-                    [{ text: "✅ Approve", callback_data: `${callbackPrefix}_approve_${depId}_${amount}` }],
-                    [{ text: "❌ Reject", callback_data: `${callbackPrefix}_reject_${depId}_${amount}` }]
+                    [{ text: "✅ Approve", callback_data: `dep_approve_${depId}_${amount}` }],
+                    [{ text: "❌ Reject", callback_data: `dep_reject_${depId}_${amount}` }]
                 ]
             };
             
@@ -427,6 +443,34 @@ const startBot = (database, socketIo, startGameLogic) => {
 
             delete chatStates[chatId];
         } catch (e) { console.error(e); bot.sendMessage(chatId, "❌ Database Error."); }
+    }
+    // Handle Premium Proofs (Manual Only)
+    else if (state.step === 'awaiting_premium_proof') {
+        const photo = msg.photo[msg.photo.length - 1];
+        const fileId = photo.file_id;
+        const user = await getUser(tgId);
+        if (!user) return delete chatStates[chatId];
+        const duration = state.duration;
+
+        try {
+            const res = await db.query(
+                "INSERT INTO deposits (user_id, telegram_id, amount, proof_image_id, status, request_type, package_duration) VALUES ($1, $2, 0, $3, 'pending', 'premium', $4) RETURNING id",
+                [user.id, tgId, fileId, duration]
+            );
+            const depId = res.rows[0].id;
+            bot.sendMessage(chatId, "✅ *Proof Received!* Admins will check shortly.", { parse_mode: "Markdown", reply_markup: userKeyboard });
+            
+            const caption = `🌟 *New Premium Request*\nUser: ${escapeMarkdown(user.username)}\nDuration: ${duration}`;
+            const markup = {
+                inline_keyboard: [
+                    [{ text: "✅ Approve", callback_data: `prem_approve_${depId}_0` }],
+                    [{ text: "❌ Reject", callback_data: `prem_reject_${depId}_0` }]
+                ]
+            };
+            const adminMsgIds = await forwardPhotoToAdmins(fileId, caption, markup);
+            await db.query("UPDATE deposits SET admin_msg_ids = $1 WHERE id = $2", [JSON.stringify(adminMsgIds), depId]);
+            delete chatStates[chatId];
+        } catch(e) { console.error(e); }
     }
   });
 
@@ -494,7 +538,6 @@ const startBot = (database, socketIo, startGameLogic) => {
             if (gameRes.rows.length === 0) return bot.answerCallbackQuery(cq.id, { text: "Game not found" });
             const game = gameRes.rows[0];
             
-            // SECURITY CHECK: Only allow Creator OR Super Admin
             const isCreator = String(game.creator_id) === String(tgId);
             const isSuper = await isSuperAdmin(tgId);
 
@@ -700,7 +743,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    // --- SUPER ADMIN: EDIT USER (Flow) ---
     if (text === "✏️ Edit User") {
         if (await isSuperAdmin(tgId)) {
             chatStates[chatId] = { step: 'awaiting_edit_search' };
@@ -709,7 +751,6 @@ const startBot = (database, socketIo, startGameLogic) => {
         return;
     }
 
-    // --- SUPER ADMIN: VIEW ADMINS ---
     if (text === "👥 View Admins") {
         if (await isSuperAdmin(tgId)) {
             const admins = await db.query("SELECT username, phone_number, role FROM users WHERE role IN ('admin', 'super_admin')");
@@ -1079,7 +1120,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 if (result.error) {
                      bot.sendMessage(chatId, `❌ **Error:** ${result.error}\n\nTry /start again.`, { reply_markup: userKeyboard });
                 } else {
-                     // JOIN GROUP BUTTON
                      const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
                      const groupUrl = groupRes.rows[0]?.value;
                      const opts = { parse_mode: "Markdown" };
@@ -1150,7 +1190,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             }
             else if (state.step === 'awaiting_transfer_amount') {
                 const amount = parseInt(text);
-                const user = await getUser(tgId); // Sender
+                const user = await getUser(tgId); 
                 if (user.points < amount) return bot.sendMessage(chatId, "❌ Not enough points.").catch(()=>{});
                 
                 await db.query("UPDATE users SET points = points - $1 WHERE telegram_id = $2", [amount, tgId]);
@@ -1192,7 +1232,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 
                 const safePattern = pattern.replace(/_/g, ' ').toUpperCase();
 
-                // GROUP MESSAGE
                 const inviteMsg = `📢 **Bingo Game #${dailyId} Open!**\n\n` +
                                   `Bet: ${betAmount} Points\n` +
                                   `Rule: ${safePattern}\n\n` +
@@ -1211,7 +1250,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                     bot.sendMessage(groupChatId, inviteMsg, groupOpts).catch(e => console.error("Group Send Error:", e.message));
                 }
 
-                // ADMIN MESSAGE: Shows "Opened by: [Username]"
                 const dashMsg = `🎮 *Game #${dailyId} Pending*\nBet: ${betAmount}\nOpened by: ${user.username}\n\n👇 *Wait for players then Start:*`;
                 const kb = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `gm_refresh_${gameId}` }], [{ text: "▶️ START", callback_data: `gm_pre_${gameId}` }], [{ text: "🛑 Abort", callback_data: `gm_abort_${gameId}` }]] };
                 
@@ -1305,10 +1343,8 @@ const startBot = (database, socketIo, startGameLogic) => {
                 bot.sendMessage(chatId, `✅ Username changed to **${newName}**!`, { parse_mode: "Markdown", reply_markup: userKeyboard });
             }
 
-            // --- SUPER ADMIN EDIT USER FLOW ---
             else if (state.step === 'awaiting_edit_search') {
                 const query = text.trim();
-                // Find by phone OR username
                 const res = await db.query("SELECT * FROM users WHERE phone_number = $1 OR LOWER(username) = LOWER($1)", [query]);
                 
                 if (res.rows.length === 0) {
@@ -1326,7 +1362,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                 if (newName.length < 3) {
                     bot.sendMessage(chatId, "❌ Username too short.");
                 } else {
-                    // Check duplicate
                     const check = await db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1)", [newName]);
                     if (check.rows.length > 0) {
                         bot.sendMessage(chatId, "❌ Username already taken.");
