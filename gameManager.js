@@ -29,6 +29,7 @@ function generateBingoCard(seed = null) {
     { col: 3, min: 46, max: 60 }, 
     { col: 4, min: 61, max: 75 },
   ];
+  // We use the seed to ensure Card #1 is always Card #1's layout for a specific game
   const random = seed ? mulberry32(parseInt(seed)) : Math.random;
 
   for (const r of ranges) {
@@ -102,7 +103,6 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
     const checkSet = (coords) => {
         const allMarked = coords.every(([r,c]) => isMarked(r,c));
         if (!allMarked) return false;
-        // Optimization: If checking specifically for win condition, ensure last number is involved
         if (lastCalledNumber) return coords.some(([r,c]) => String(cardData[r][c]) === lastCalledStr);
         return true; 
     };
@@ -111,7 +111,6 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
 
     switch (pattern) {
         case 'any_line': 
-            // Any Row, Col, Diagonal, OR Corners
             for(const line of [...rows, ...cols, diag1, diag2]) {
                 if(checkSet(line)) return { valid: true };
             }
@@ -119,14 +118,9 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
             break;
 
         case 'two_lines': 
-             // Count how many "lines" are complete. 
-             // IMPORTANT: "Corners" counts as 1 line here per request.
              let completedSets = 0;
              let winningSetInvolvesLast = false;
-
-             // Combine all possible "lines" including corners
              const allSets = [...rows, ...cols, diag1, diag2, corners];
-
              for(const line of allSets) {
                  if (isFull(line)) {
                      completedSets++;
@@ -135,8 +129,6 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
                      }
                  }
              }
-
-             // Win if 2+ sets are complete AND the last number was part of at least one
              if (completedSets >= 2 && (winningSetInvolvesLast || !lastCalledNumber)) return { valid: true };
              break;
 
@@ -233,7 +225,6 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
             const game = { calledNumbers: new Set(), lastCalledNumber: null, io: io, intervalId: null, pattern, winners: new Set(), isEnding: false, cards: gameCards, dailyId, hasProcessedEnd: false };
             activeGames.set(gameId, game);
             
-            // Broadcast start
             if (gameStartCallback) gameStartCallback(gameId, dailyId, finalPrize, pattern);
 
             io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'active', gameId, displayId: dailyId, pattern, pot: finalPrize });
@@ -267,7 +258,6 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
                 
                 game.io.to(`game_${gameId}`).emit('numberCalled', { number: newNumber, allCalled: [...game.calledNumbers] });
 
-                // Auto Bingo Logic
                 for (const card of game.cards) {
                     if (card.isPremium && card.pref_auto_bingo && !game.winners.has(card.user_id)) {
                         const potentialMarks = new Set([...game.calledNumbers]);
@@ -317,7 +307,6 @@ async function processGameEnd(gameId, io, game) {
 
     try {
         if (winnerCount >= 1) {
-            // *** REFUND IF MORE THAN 3 WINNERS ***
             if (winnerCount > 3) {
                  await db.query("UPDATE games SET status = 'aborted' WHERE id = $1", [gameId]);
                  const players = await db.query("SELECT user_id FROM player_cards WHERE game_id = $1", [gameId]);
@@ -334,7 +323,6 @@ async function processGameEnd(gameId, io, game) {
                  return; 
             }
 
-            // Normal Payout
             const splitPrize = Math.floor(pot / winnerCount);
             await db.query("UPDATE games SET status = 'finished', winner_id = $1 WHERE id = $2", [winnerIds[0], gameId]);
             
@@ -352,7 +340,6 @@ async function processGameEnd(gameId, io, game) {
             if (gameEndCallback) gameEndCallback(gameId, winnerText, game.dailyId);
 
         } else {
-             // 0 Winners
             if (gameEndCallback) gameEndCallback(gameId, "No Winner", game.dailyId);
         }
         
@@ -403,24 +390,16 @@ async function registerUserByPhone(phone, username) {
         return { user: phoneCheck.rows[0], created: false };
     }
     
-    const insertRes = await db.query('INSERT INTO users (phone_number, username, points) VALUES ($1, $2, 100) RETURNING *', [phone, username]);
+    // UPDATED: Points set to 0 explicitly
+    const insertRes = await db.query('INSERT INTO users (phone_number, username, points) VALUES ($1, $2, 0) RETURNING *', [phone, username]);
     return { user: insertRes.rows[0], created: true };
 }
 
 async function linkTelegramAccount(phone, tgId, username) {
-    const userCheck = await db.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [username]);
-    if (userCheck.rows.length > 0 && userCheck.rows[0].phone_number !== phone) {
-        return { error: "Username taken!" };
-    }
-
-    const userByPhone = await db.query('SELECT * FROM users WHERE phone_number = $1', [phone]);
-    if (userByPhone.rows.length > 0) {
-        const updatedUser = await db.query('UPDATE users SET telegram_id = $1 WHERE phone_number = $2 RETURNING *', [tgId, phone]);
-        return { user: updatedUser.rows[0], status: 'account_linked' };
-    }
-
-    const newUser = await db.query('INSERT INTO users (phone_number, telegram_id, username, points) VALUES ($1, $2, $3, 100) RETURNING *', [phone, tgId, username]);
-    return { user: newUser.rows[0], status: 'new_user_created' };
+    // Note: The logic in db.js handles this, but if called via gameManager, we want to ensure db.js logic is used.
+    // We are exporting the db.js function in module.exports at the bottom to ensure consistency.
+    // However, for compatibility with bot.js imports, we can wrap it or rely on db.js export.
+    return require('./db').linkTelegramAccount(phone, tgId, username);
 }
 
 function initializeSocketListeners(io) {
@@ -484,10 +463,41 @@ function initializeSocketListeners(io) {
         if (userRes.rows.length === 0) return socket.emit('error', { message: 'User not found.' });
         if (userRes.rows[0].points < game.bet_amount) return socket.emit('error', { message: 'Not enough points. / ነጥብዎ በቂ አይደለም።' });
 
+        // --- NEW CARD GENERATION LOGIC ---
+        // 1. Get all taken IDs for this game
+        const takenRes = await db.query("SELECT original_card_id FROM player_cards WHERE game_id = $1", [gameId]);
+        const takenIds = new Set(takenRes.rows.map(r => parseInt(r.original_card_id)));
+        
+        const availableOptions = [];
         const room = io.sockets.adapter.rooms.get(`game_${gameId}`);
         const playerCount = room ? room.size : 1;
-        let numOptions = (playerCount * 5) + 5; if (numOptions > 50) numOptions = 50;
-        const cardOptions = Array.from({ length: numOptions }, (_, i) => { const cardId = i + 1; return { id: cardId, grid: generateBingoCard(cardId + (gameId * 1000)) }; });
+        const needed = (playerCount * 5) + 5; 
+
+        // 2. Try to fill from 1 to 100 first (The "100 Fixed Cards" requirement)
+        for (let i = 1; i <= 100; i++) {
+            if (!takenIds.has(i)) {
+                availableOptions.push(i);
+            }
+            if (availableOptions.length >= 50) break; // Optimization: don't send too many
+        }
+
+        // 3. If we are running out of the first 100, expand range
+        if (availableOptions.length < 10) {
+            let overflowStart = 101;
+            while (availableOptions.length < 50) {
+                if (!takenIds.has(overflowStart)) {
+                    availableOptions.push(overflowStart);
+                }
+                overflowStart++;
+                if (overflowStart > 5000) break; // Safety break
+            }
+        }
+
+        const cardOptions = availableOptions.map(id => ({ 
+            id: id, 
+            grid: generateBingoCard(id + (gameId * 1000)) // Keeps layout consistent per game
+        }));
+        
         socket.emit('cardOptions', { options: cardOptions, bet: game.bet_amount });
     });
 

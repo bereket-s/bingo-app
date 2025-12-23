@@ -20,7 +20,8 @@ const TRANSLATIONS = {
     save: "Save",
     hostMsg: "Host will start the game soon.",
     bet: "Bet",
-    prize: "Prize", 
+    prizeLabel: "Prize is ",
+    currency: " Birr",
     pattern: "Winning Pattern",
     myCards: "My Cards",
     reqCards: "Buy Cards",
@@ -62,7 +63,8 @@ const TRANSLATIONS = {
     save: "አስቀምጥ",
     hostMsg: "ተጫዋቾችን በመጠበቅ ላይ",
     bet: "መወራረጃ",
-    prize: "ሽልማት",
+    prizeLabel: "ደራሽ ",
+    currency: " ብር",
     pattern: "የአሸናፊነት ህግ",
     myCards: "የኔ ካርዶች",
     reqCards: "ካርድ ይግዙ",
@@ -94,6 +96,17 @@ const TRANSLATIONS = {
 };
 
 const getT = (lang) => (key) => TRANSLATIONS[lang][key] || TRANSLATIONS['en'][key] || key;
+
+// Helper to format numbers like "B 5", "I 20" for display
+const formatBingoNum = (n) => {
+    const num = parseInt(n);
+    if (!num) return "..";
+    if (num <= 15) return `B${num}`;
+    if (num <= 30) return `I${num}`;
+    if (num <= 45) return `N${num}`;
+    if (num <= 60) return `G${num}`;
+    return `O${num}`;
+};
 
 const PatternDisplay = ({ pattern, t }) => {
     const [frame, setFrame] = useState(0);
@@ -183,7 +196,6 @@ function App() {
   useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
   useEffect(() => { langRef.current = lang; }, [lang]); 
 
-  // --- RESTORE MARKED CELLS ON REFRESH ---
   useEffect(() => {
       if(gameState.gameId) {
           const savedMarks = localStorage.getItem(`bingo_marks_${gameState.gameId}`);
@@ -207,7 +219,6 @@ function App() {
       }
   }, [gameState.gameId]);
 
-  // --- SAVE MARKED CELLS ON CHANGE ---
   useEffect(() => {
       if(gameState.gameId && Object.keys(markedCells).length > 0) {
           const serializable = {};
@@ -216,7 +227,6 @@ function App() {
       }
   }, [markedCells, gameState.gameId]);
 
-  // --- HARD RESET ONLY ON IDLE ---
   useEffect(() => {
     if (gameState.status === 'idle') {
       setMyCards([]);
@@ -463,9 +473,6 @@ function App() {
 
   if (!auth) return <div className="App login-screen"><h2>{t('invalid')}</h2></div>;
 
-  // PRIZE DISPLAY LOGIC:
-  // If Pending: Show 70% of current pool (Estimated Prize).
-  // If Active/Finished: Show the fixed pot (Actual Prize).
   const displayPrize = gameState.status === 'pending' 
     ? Math.floor(gameState.pot * 0.7) 
     : gameState.pot;
@@ -521,7 +528,7 @@ function App() {
                 <PatternDisplay pattern={gameState.pattern} t={t} />
                 <div className="prize-box">
                     <span className="lbl">{t('gameId')} {gameState.displayId || gameState.gameId}</span>
-                    <span className="val">{displayPrize}</span>
+                    <span className="val">{t('prizeLabel')} {displayPrize}{t('currency')}</span>
                 </div>
             </div>
           )}
@@ -598,8 +605,17 @@ function App() {
               <div className="active-game">
                   <header className="game-header">
                       <div className="called-nums">
-                          <div className="last-called-num"><span className="label">{t('lastCalled')}</span><div className="ball">{gameState.calledNumbers[gameState.calledNumbers.length - 1] || '..'}</div></div>
-                          <div className="called-history"><div className="called-history-list">{gameState.calledNumbers.slice().reverse().map((n,i)=><span key={i} className="mini-ball">{n}</span>)}</div></div>
+                          <div className="last-called-num">
+                            <span className="label">{t('lastCalled')}</span>
+                            <div className="ball">{formatBingoNum(gameState.calledNumbers[gameState.calledNumbers.length - 1])}</div>
+                          </div>
+                          <div className="called-history">
+                            <div className="called-history-list">
+                                {gameState.calledNumbers.slice().reverse().map((n,i) => (
+                                    <span key={i} className="mini-ball">{formatBingoNum(n)}</span>
+                                ))}
+                            </div>
+                          </div>
                       </div>
                   </header>
                   {myCards.length > 0 ? (

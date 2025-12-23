@@ -23,7 +23,7 @@ async function initializeDatabase() {
     try {
         await client.query('BEGIN');
 
-        // Core Tables
+        // Core Tables - Note points DEFAULT 0
         await client.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, telegram_id BIGINT UNIQUE, username VARCHAR(255) NOT NULL, points INTEGER DEFAULT 0, role VARCHAR(20) DEFAULT 'player', session_token VARCHAR(255) UNIQUE, phone_number VARCHAR(50), has_auto_daub BOOLEAN DEFAULT FALSE, pref_auto_daub BOOLEAN DEFAULT TRUE, pref_auto_bingo BOOLEAN DEFAULT TRUE, premium_expires_at TIMESTAMP WITH TIME ZONE, last_bot_msg_id INTEGER, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS games (id SERIAL PRIMARY KEY, status VARCHAR(50) NOT NULL DEFAULT 'idle', bet_amount INTEGER NOT NULL DEFAULT 0, pot INTEGER NOT NULL DEFAULT 0, winning_pattern VARCHAR(50) DEFAULT 'any_line', winner_id INTEGER REFERENCES users(id), created_by VARCHAR(255), creator_id BIGINT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS player_cards (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), game_id INTEGER NOT NULL REFERENCES games(id), card_data JSONB NOT NULL, original_card_id INTEGER, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, game_id, id));`);
@@ -60,8 +60,11 @@ async function initializeDatabase() {
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deposits' AND column_name = 'admin_msg_ids') THEN
                     ALTER TABLE deposits ADD COLUMN admin_msg_ids JSONB;
                 END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'withdrawal_requests' AND column_name = 'admin_msg_ids') THEN
+                    ALTER TABLE withdrawal_requests ADD COLUMN admin_msg_ids JSONB;
+                END IF;
                 
-                -- Force Points Default to 0 for new users
+                -- CRITICAL: Force points default to 0
                 ALTER TABLE users ALTER COLUMN points SET DEFAULT 0;
             END $$;
         `);
@@ -92,7 +95,7 @@ const logTransaction = async (userId, type, amount, relatedUserId = null, gameId
     }
 };
 
-// Safer Account Linking - Now defaults points to 0
+// Safer Account Linking - Explicitly sets points to 0
 async function linkTelegramAccount(phone, tgId, username) {
     try {
         const userCheck = await pool.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [username]);
@@ -114,7 +117,7 @@ async function linkTelegramAccount(phone, tgId, username) {
             return { user: updatedUser.rows[0], status: 'profile_updated' };
         }
         else {
-            // FIXED: Start with 0 points
+            // FIXED: Explicitly insert 0 points
             const newUser = await pool.query('INSERT INTO users (phone_number, telegram_id, username, points) VALUES ($1, $2, $3, 0) RETURNING *', [phone, tgId, username]);
             return { user: newUser.rows[0], status: 'new_user_created' };
         }
