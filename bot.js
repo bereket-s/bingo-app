@@ -1,5 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const Tesseract = require('tesseract.js'); 
+const Tesseract = require('tesseract.js'); // REQUIRED for Image Reading
 const { getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback } = require('./gameManager'); 
 const db = require('./db'); 
 const dayjs = require('dayjs');
@@ -13,6 +13,26 @@ const cleanPhone = (p) => p ? p.replace(/\D/g, '') : '';
 const escapeMarkdown = (text) => {
     if (!text) return '';
     return String(text).replace(/[_*[\]()`]/g, '\\$&');
+};
+
+// --- LEVENSHTEIN DISTANCE (Fuzzy Matching) ---
+// Calculates how many characters are different between two strings
+const getLevenshteinDistance = (a, b) => {
+    if (a.length === 0) return b.length;
+    if (b.length === 0) return a.length;
+    const matrix = [];
+    for (let i = 0; i <= b.length; i++) { matrix[i] = [i]; }
+    for (let j = 0; j <= a.length; j++) { matrix[0][j] = j; }
+    for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+            if (b.charAt(i - 1) === a.charAt(j - 1)) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1));
+            }
+        }
+    }
+    return matrix[b.length][a.length];
 };
 
 const startBot = (database, socketIo, startGameLogic) => {
@@ -380,8 +400,8 @@ const startBot = (database, socketIo, startGameLogic) => {
         const user = await getUser(tgId);
         if (!user) return delete chatStates[chatId];
 
-        // --- IMPROVED OCR (SIMPLE MATCHING) ---
-        // This relies on the webhook having already saved the SMS to the DB
+        // --- IMPROVED OCR: SLIDING WINDOW FUZZY MATCH ---
+        // Solves the "3 vs S" problem by allowing 1-3 errors
         if (state.step === 'awaiting_deposit_proof') {
             const scanMsg = await bot.sendMessage(chatId, "🔍 **Scanning receipt... Please wait.**", { parse_mode: "Markdown" });
             try {
@@ -396,15 +416,34 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const pendingTxns = await db.query("SELECT * FROM bank_transactions WHERE status = 'unclaimed'");
                 
                 let foundTxn = null;
+                let minDistance = 999;
+
                 for (const txn of pendingTxns.rows) {
                     // 3. Clean the DB code similarly
-                    const cleanDB = txn.txn_code.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-                    
-                    // 4. Exact Substring Match: Does the DB code exist inside the OCR text?
-                    if (cleanDB.length > 5 && cleanOCR.includes(cleanDB)) {
+                    const dbCode = txn.txn_code.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+                    if (dbCode.length < 5) continue; // Skip too short codes
+
+                    // 4. Exact Substring Match (Fast)
+                    if (cleanOCR.includes(dbCode)) {
                         foundTxn = txn;
-                        console.log(`[OCR MATCH] Found code: ${txn.txn_code}`);
+                        console.log(`[OCR EXACT] Found: ${dbCode}`);
                         break;
+                    }
+
+                    // 5. Sliding Window Fuzzy Match (Slower but accurate for "3" vs "S")
+                    const windowSize = dbCode.length;
+                    // Allow 30% error rate (e.g. 3 errors in 10 chars is acceptable)
+                    const threshold = Math.ceil(dbCode.length * 0.3);
+
+                    for (let i = 0; i <= cleanOCR.length - windowSize; i++) {
+                        const window = cleanOCR.substr(i, windowSize);
+                        const dist = getLevenshteinDistance(dbCode, window);
+                        
+                        if (dist < minDistance && dist <= threshold) {
+                            minDistance = dist;
+                            foundTxn = txn;
+                            console.log(`[OCR FUZZY] Best match: ${dbCode} (Dist: ${dist})`);
+                        }
                     }
                 }
 
@@ -499,6 +538,8 @@ const startBot = (database, socketIo, startGameLogic) => {
     const adminUser = await getUser(tgId);
 
     try {
+        // --- NEW: DUMMY DEPOSIT HANDLER ---
+        // Triggered by the "Deposit" button in the Announcement
         if (action === 'dummy_deposit') {
             const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
             chatStates[chatId] = { step: 'awaiting_deposit_amount' };
