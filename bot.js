@@ -15,6 +15,22 @@ const escapeMarkdown = (text) => {
     return String(text).replace(/[_*[\]()`]/g, '\\$&');
 };
 
+// --- HELPER: NORMALIZE TEXT FOR OCR MATCHING ---
+// Converts look-alike characters to a standard format to fix reading errors
+const normalizeOCR = (str) => {
+    if (!str) return '';
+    return str.toUpperCase()
+        .replace(/O/g, '0') // Letter O -> Number 0
+        .replace(/D/g, '0') // Letter D -> Number 0
+        .replace(/I/g, '1') // Letter I -> Number 1
+        .replace(/L/g, '1') // Letter L -> Number 1
+        .replace(/Z/g, '2') // Letter Z -> Number 2
+        .replace(/S/g, '5') // Letter S -> Number 5
+        .replace(/B/g, '8') // Letter B -> Number 8
+        .replace(/G/g, '6') // Letter G -> Number 6
+        .replace(/[^0-9A-Z]/g, ''); // Remove everything else
+};
+
 const startBot = (database, socketIo, startGameLogic) => {
   io = socketIo;
 
@@ -161,6 +177,31 @@ const startBot = (database, socketIo, startGameLogic) => {
       }
   };
 
+  // --- SMART BROADCASTING (Auto-Delete Old Messages) ---
+  const broadcastToAllUsers = async (text, options = {}) => {
+      try {
+          const allUsers = await db.query("SELECT telegram_id, last_bot_msg_id FROM users WHERE telegram_id IS NOT NULL");
+          let count = 0;
+          
+          for (const u of allUsers.rows) {
+              const tgId = u.telegram_id;
+              
+              if (u.last_bot_msg_id) {
+                  try { await bot.deleteMessage(tgId, u.last_bot_msg_id); } catch (e) {}
+              }
+
+              try {
+                  const sent = await bot.sendMessage(tgId, text, { parse_mode: "Markdown", ...options });
+                  await db.query("UPDATE users SET last_bot_msg_id = $1 WHERE telegram_id = $2", [sent.message_id, tgId]);
+                  count++;
+              } catch (e) {}
+              
+              await new Promise(r => setTimeout(r, 40)); 
+          }
+          return count;
+      } catch (e) { console.error("Broadcast All Error:", e); return 0; }
+  };
+
   const broadcastToAdmins = async (text, options = {}) => {
       const allAdmins = await getAllAdminIds();
       const sentMap = {};
@@ -216,31 +257,6 @@ const startBot = (database, socketIo, startGameLogic) => {
       }
   };
 
-  // --- SMART BROADCASTING (Auto-Delete Old Messages) ---
-  const broadcastToAllUsers = async (text, options = {}) => {
-      try {
-          const allUsers = await db.query("SELECT telegram_id, last_bot_msg_id FROM users WHERE telegram_id IS NOT NULL");
-          let count = 0;
-          
-          for (const u of allUsers.rows) {
-              const tgId = u.telegram_id;
-              
-              if (u.last_bot_msg_id) {
-                  try { await bot.deleteMessage(tgId, u.last_bot_msg_id); } catch (e) {}
-              }
-
-              try {
-                  const sent = await bot.sendMessage(tgId, text, { parse_mode: "Markdown", ...options });
-                  await db.query("UPDATE users SET last_bot_msg_id = $1 WHERE telegram_id = $2", [sent.message_id, tgId]);
-                  count++;
-              } catch (e) {}
-              
-              await new Promise(r => setTimeout(r, 40)); 
-          }
-          return count;
-      } catch (e) { console.error("Broadcast All Error:", e); return 0; }
-  };
-
   setGameStartCallback(async (gameId, dailyId, prize, pattern) => {
       const inviteLink = `https://t.me/${botUsername}?start=bingo`;
       const safePattern = String(pattern).replace(/_/g, ' ').toUpperCase(); 
@@ -259,7 +275,6 @@ const startBot = (database, socketIo, startGameLogic) => {
           } 
       };
       
-      // Cleanup group messages
       try {
           const oldWinnerMsgId = await getMsgId('last_winner_msg_id');
           const chatId = await getGroupId();
@@ -380,27 +395,33 @@ const startBot = (database, socketIo, startGameLogic) => {
         const user = await getUser(tgId);
         if (!user) return delete chatStates[chatId];
 
-        // --- IMPROVED OCR (INVERSE MATCHING) ---
+        // --- IMPROVED OCR (NORMALIZED MATCHING) ---
         if (state.step === 'awaiting_deposit_proof') {
             const scanMsg = await bot.sendMessage(chatId, "🔍 **Scanning receipt... Please wait.**", { parse_mode: "Markdown" });
             try {
                 const fileLink = await bot.getFileLink(fileId);
                 const { data: { text } } = await Tesseract.recognize(fileLink, 'eng');
                 
-                // Clean OCR Text: Uppercase and remove noise
-                const cleanOCR = text.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                // 1. Get raw OCR text
+                console.log(`[OCR DEBUG] Raw Text for ${user.username}:`, text);
+
+                // 2. Normalize OCR Text (Fix typical OCR errors like 8 for B, 0 for O)
+                const normalizedOCR = normalizeOCR(text);
+                console.log(`[OCR DEBUG] Normalized Text:`, normalizedOCR);
                 
-                // Fetch ALL unclaimed transactions from DB
+                // 3. Fetch Pending Transactions
                 const pendingTxns = await db.query("SELECT * FROM bank_transactions WHERE status = 'unclaimed'");
                 
                 let foundTxn = null;
                 for (const txn of pendingTxns.rows) {
-                    // Normalize the DB code too
-                    const dbCode = txn.txn_code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    // 4. Normalize the Database Code too
+                    const normalizedDB = normalizeOCR(txn.txn_code);
                     
-                    // CHECK: Is the known valid code inside the messy OCR text?
-                    if (dbCode.length > 5 && cleanOCR.includes(dbCode)) {
+                    // 5. Check if the DB code exists inside the Receipt text
+                    // We check if length is sufficient to avoid false positives with short numbers like "100"
+                    if (normalizedDB.length > 5 && normalizedOCR.includes(normalizedDB)) {
                         foundTxn = txn;
+                        console.log(`[OCR MATCH] Found! DB: ${txn.txn_code} matched in image.`);
                         break;
                     }
                 }
@@ -422,6 +443,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 }
             } catch (e) {
                 console.error("OCR Error:", e);
+                // Fallthrough to manual if OCR fails
             }
         }
         // --- END OCR ---
@@ -496,6 +518,8 @@ const startBot = (database, socketIo, startGameLogic) => {
     const adminUser = await getUser(tgId);
 
     try {
+        // --- NEW: DUMMY DEPOSIT HANDLER ---
+        // Triggered by the "Deposit" button in the Announcement
         if (action === 'dummy_deposit') {
             const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
             chatStates[chatId] = { step: 'awaiting_deposit_amount' };
@@ -530,6 +554,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             if (gameRes.rows.length === 0) return bot.answerCallbackQuery(cq.id, { text: "Game not found" });
             const game = gameRes.rows[0];
             
+            // SECURITY CHECK: Only allow Creator OR Super Admin
             const isCreator = String(game.creator_id) === String(tgId);
             const isSuper = await isSuperAdmin(tgId);
 
@@ -689,7 +714,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const tgId = msg.from.id; // Correct
+    const tgId = msg.from.id; 
     const text = msg.text;
     if (!text) return;
 
