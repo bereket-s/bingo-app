@@ -108,7 +108,7 @@ const startBot = (database, socketIo, startGameLogic) => {
           [{ text: "🗑️ Delete User / አስወግድ" }, { text: "🏦 Set Bank / ባንክ አስገባ" }],
           [{ text: "📢 Set Group Link" }, { text: "➕ Add Points" }], 
           [{ text: "➖ Remove Points" }, { text: "➕ Bulk Add" }],
-          [{ text: "🔄 Reset" }, { text: "💰 End Day Report" }], // UPDATED
+          [{ text: "🔄 Reset" }, { text: "💰 End Day Report" }], 
           [{ text: "📋 Transactions" }, { text: "📈 Global Stats" }],
           [{ text: "📢 Broadcast Group Link" }, { text: "⚠️ Reset All Points" }],
           [{ text: "🔧 SMS & Webhook" }, { text: "📱 App Link" }]
@@ -1317,16 +1317,30 @@ const startBot = (database, socketIo, startGameLogic) => {
             else if (state.step === 'awaiting_bank_details') {
                 const amount = state.withdrawAmount;
                 const user = await getUser(tgId);
+                
+                // 1. Subtract points
                 await db.query("UPDATE users SET points = points - $1 WHERE id = $2", [amount, user.id]);
+                
+                // 2. Create the Request Record
+                const wdRes = await db.query(
+                    "INSERT INTO withdrawal_requests (user_id, telegram_id, amount, bank_details, status) VALUES ($1, $2, $3, $4, 'pending') RETURNING id",
+                    [user.id, tgId, amount, text]
+                );
+                const wdId = wdRes.rows[0].id;
+
                 delete chatStates[chatId];
                 bot.sendMessage(chatId, "✅ **Request Sent**", { reply_markup: userKeyboard }).catch(()=>{});
                  
                 const safeUser = escapeMarkdown(user.username);
                 const safeInfo = escapeMarkdown(text);
-                const adminMsg = `🚨 *Withdrawal*\nUser: ${safeUser}\nAmt: ${amount}\nInfo: ${safeInfo}`;
+                const adminMsg = `🚨 *Withdrawal Request #${wdId}*\nUser: ${safeUser}\nAmt: ${amount}\nInfo: ${safeInfo}`;
                  
-                const markup = { inline_keyboard: [[{ text: "Approve", callback_data: `wd_approve_${tgId}_${amount}` }], [{ text: "Reject", callback_data: `wd_reject_${tgId}_${amount}` }]] };
-                broadcastToAdmins(adminMsg, { parse_mode: "Markdown", reply_markup: markup });
+                // 3. Send to admins using correct ID
+                const markup = { inline_keyboard: [[{ text: "Approve", callback_data: `wd_approve_${wdId}_${amount}` }], [{ text: "Reject", callback_data: `wd_reject_${wdId}_${amount}` }]] };
+                const msgIds = await broadcastToAdmins(adminMsg, { parse_mode: "Markdown", reply_markup: markup });
+
+                // 4. Update the request with message IDs for sync
+                await db.query("UPDATE withdrawal_requests SET admin_msg_ids = $1 WHERE id = $2", [JSON.stringify(msgIds), wdId]);
             }
             else if (state.step === 'awaiting_transfer_username') {
                 const res = await db.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [text.trim()]);

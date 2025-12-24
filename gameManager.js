@@ -390,15 +390,12 @@ async function registerUserByPhone(phone, username) {
         return { user: phoneCheck.rows[0], created: false };
     }
     
-    // UPDATED: Points set to 0 explicitly
+    // Explicitly set points to 0 for new players
     const insertRes = await db.query('INSERT INTO users (phone_number, username, points) VALUES ($1, $2, 0) RETURNING *', [phone, username]);
     return { user: insertRes.rows[0], created: true };
 }
 
 async function linkTelegramAccount(phone, tgId, username) {
-    // Note: The logic in db.js handles this, but if called via gameManager, we want to ensure db.js logic is used.
-    // We are exporting the db.js function in module.exports at the bottom to ensure consistency.
-    // However, for compatibility with bot.js imports, we can wrap it or rely on db.js export.
     return require('./db').linkTelegramAccount(phone, tgId, username);
 }
 
@@ -463,7 +460,7 @@ function initializeSocketListeners(io) {
         if (userRes.rows.length === 0) return socket.emit('error', { message: 'User not found.' });
         if (userRes.rows[0].points < game.bet_amount) return socket.emit('error', { message: 'Not enough points. / ነጥብዎ በቂ አይደለም።' });
 
-        // --- NEW CARD GENERATION LOGIC ---
+        // --- UPDATED CARD GENERATION LOGIC (100 FIXED) ---
         // 1. Get all taken IDs for this game
         const takenRes = await db.query("SELECT original_card_id FROM player_cards WHERE game_id = $1", [gameId]);
         const takenIds = new Set(takenRes.rows.map(r => parseInt(r.original_card_id)));
@@ -471,25 +468,28 @@ function initializeSocketListeners(io) {
         const availableOptions = [];
         const room = io.sockets.adapter.rooms.get(`game_${gameId}`);
         const playerCount = room ? room.size : 1;
-        const needed = (playerCount * 5) + 5; 
+        
+        // Dynamic Limit: At least 100, but increase if players increase
+        const dynamicLimit = Math.max(100, (playerCount * 5) + 20);
 
         // 2. Try to fill from 1 to 100 first (The "100 Fixed Cards" requirement)
         for (let i = 1; i <= 100; i++) {
             if (!takenIds.has(i)) {
                 availableOptions.push(i);
             }
-            if (availableOptions.length >= 50) break; // Optimization: don't send too many
+            // If we have enough for display, stop. But respect 100 minimum.
+            if (availableOptions.length >= dynamicLimit) break;
         }
 
-        // 3. If we are running out of the first 100, expand range
+        // 3. If we are running out (more than 100 players/cards needed), expand range
         if (availableOptions.length < 10) {
             let overflowStart = 101;
-            while (availableOptions.length < 50) {
+            while (availableOptions.length < dynamicLimit) {
                 if (!takenIds.has(overflowStart)) {
                     availableOptions.push(overflowStart);
                 }
                 overflowStart++;
-                if (overflowStart > 5000) break; // Safety break
+                if (overflowStart > 10000) break; // Safety break
             }
         }
 
