@@ -844,8 +844,8 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const fancyMsg = `🔥 **BINGO DAY IS HERE!** 🔥\n` +
                     `**ቢንጎ ጨዋታ የሚካሄድበት ቀን!**\n\n` +
                     `📅 **Every Day Schedule / የየቀኑ ፕሮግራም:**\n` +
-                    `🕗 **Start:** 8:00 PM (Night) | 2:00 (ማታ)\n` +
-                    `🕓 **End:** 4:00 AM (Morning) | 10:00 (ጠዋት)\n\n` +
+                    `🕗 **Start:** 2:00 PM (Afternoon) | 8:00 (ቀን)\n` +
+                    `🕓 **End:** 10:00 PM (Night) | 4:00 (ማታ)\n\n` +
                     `💰 **Deposit Money NOW to be ready!**\n` +
                     `💰 **አሁኑኑ ብር አስገብተው ይዘጋጁ!**\n\n` +
                     `👇 **JOIN THE CHANNEL & GROUP to Play:**`;
