@@ -3,17 +3,17 @@ const { Pool } = require('pg');
 const isProduction = process.env.NODE_ENV === 'production';
 
 const connectionConfig = {
-  connectionString: process.env.DATABASE_URL,
-  ssl: isProduction ? { rejectUnauthorized: false } : false
+    connectionString: process.env.DATABASE_URL,
+    ssl: isProduction ? { rejectUnauthorized: false } : false
 };
 
 if (!process.env.DATABASE_URL) {
-  connectionConfig.user = process.env.DB_USER || 'postgres';
-  connectionConfig.host = process.env.DB_HOST || 'localhost';
-  connectionConfig.database = process.env.DB_NAME || 'bingo_db';
-  connectionConfig.password = process.env.DB_PASSWORD || '199129';
-  connectionConfig.port = parseInt(process.env.DB_PORT || '5432', 10);
-  delete connectionConfig.connectionString;
+    connectionConfig.user = process.env.DB_USER || 'postgres';
+    connectionConfig.host = process.env.DB_HOST || 'localhost';
+    connectionConfig.database = process.env.DB_NAME || 'bingo_db';
+    connectionConfig.password = process.env.DB_PASSWORD || '199129';
+    connectionConfig.port = parseInt(process.env.DB_PORT || '5432', 10);
+    delete connectionConfig.connectionString;
 }
 
 const pool = new Pool(connectionConfig);
@@ -64,10 +64,19 @@ async function initializeDatabase() {
                     ALTER TABLE withdrawal_requests ADD COLUMN admin_msg_ids JSONB;
                 END IF;
                 
+                -- NEW FINANCIAL COLUMNS
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'admin_balance') THEN
+                    ALTER TABLE users ADD COLUMN admin_balance INTEGER DEFAULT 0;
+                END IF;
+
                 -- CRITICAL: Force points default to 0
                 ALTER TABLE users ALTER COLUMN points SET DEFAULT 0;
             END $$;
         `);
+
+        // NEW TABLES
+        await client.query(`CREATE TABLE IF NOT EXISTS daily_reports (date DATE PRIMARY KEY, total_revenue INTEGER DEFAULT 0, total_payout INTEGER DEFAULT 0, net_profit INTEGER DEFAULT 0, system_share INTEGER DEFAULT 0, admin_shares JSONB DEFAULT '{}'::jsonb, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
+        await client.query(`CREATE TABLE IF NOT EXISTS admin_transfers (id SERIAL PRIMARY KEY, from_admin_id INTEGER REFERENCES users(id), to_admin_id INTEGER REFERENCES users(id), amount INTEGER NOT NULL, status VARCHAR(50) DEFAULT 'pending', created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
 
         await client.query('COMMIT');
         console.log('✅ Database initialized.');
@@ -111,7 +120,7 @@ async function linkTelegramAccount(phone, tgId, username) {
                 await pool.query('DELETE FROM users WHERE id = $1', [userByTg.rows[0].id]);
             }
             return { user: updatedUser.rows[0], status: 'account_linked' };
-        } 
+        }
         else if (userByTg.rows.length > 0) {
             const updatedUser = await pool.query('UPDATE users SET phone_number = $1, username = $2 WHERE telegram_id = $3 RETURNING *', [phone, username, tgId]);
             return { user: updatedUser.rows[0], status: 'profile_updated' };
@@ -128,7 +137,7 @@ async function linkTelegramAccount(phone, tgId, username) {
 }
 
 module.exports = {
-  query: (text, params) => pool.query(text, params),
-  logTransaction,
-  linkTelegramAccount
+    query: (text, params) => pool.query(text, params),
+    logTransaction,
+    linkTelegramAccount
 };
