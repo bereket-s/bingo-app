@@ -111,7 +111,8 @@ const startBot = (database, socketIo, startGameLogic) => {
             [{ text: "🔄 Reset" }, { text: "💰 End Day Report" }],
             [{ text: "📋 Transactions" }, { text: "📈 Global Stats" }],
             [{ text: "📢 Broadcast Group Link" }, { text: "⚠️ Reset All Points" }],
-            [{ text: "🔧 SMS & Webhook" }, { text: "📱 App Link" }]
+            [{ text: "🔧 SMS & Webhook" }, { text: "📱 App Link" }],
+            [{ text: "💎 Manage Admin Balances" }]
         ],
         resize_keyboard: true,
         persistent: true
@@ -813,6 +814,20 @@ const startBot = (database, socketIo, startGameLogic) => {
                     bot.sendMessage(sender.rows[0].telegram_id, `✅ **Transfer Completed!**\n\n${transfer.amount} deducted from your balance.`);
                 }
             }
+
+            if (action.startsWith('adm_bal_')) {
+                const act = action.replace('adm_bal_', ''); // 'add' or 'remove'
+                if (chatStates[chatId] && chatStates[chatId].step === 'awaiting_adm_bal_action') {
+                    chatStates[chatId].step = 'awaiting_adm_bal_final';
+                    chatStates[chatId].actionType = act;
+
+                    const verb = act === 'add' ? 'Add' : 'Remove';
+                    bot.sendMessage(chatId, `🔢 **Enter Amount to ${verb}:**`, { parse_mode: "Markdown" });
+                    await bot.answerCallbackQuery(cq.id);
+                } else {
+                    await bot.answerCallbackQuery(cq.id, { text: "Session expired. Try again.", show_alert: true });
+                }
+            }
         } catch (err) { console.error("Callback Error:", err); }
     });
 
@@ -882,6 +897,14 @@ const startBot = (database, socketIo, startGameLogic) => {
                     msg += `👤 ${a.username} (${a.phone_number || 'No Phone'})\nRole: ${a.role}\n\n`;
                 });
                 bot.sendMessage(chatId, msg, { parse_mode: "Markdown" });
+            }
+            return;
+        }
+
+        if (text === "💎 Manage Admin Balances") {
+            if (await isSuperAdmin(tgId)) {
+                chatStates[chatId] = { step: 'awaiting_adm_bal_search' };
+                bot.sendMessage(chatId, "💎 **Manage Admin Balances**\n\n👇 Send the **Username** of the Admin you want to manage:", { parse_mode: "Markdown", reply_markup: { force_reply: true } });
             }
             return;
         }
@@ -1549,11 +1572,28 @@ const startBot = (database, socketIo, startGameLogic) => {
                 else if (state.step === 'awaiting_add_username') { state.username = text.trim(); state.step = 'awaiting_add_amount'; bot.sendMessage(chatId, "Amount:").catch(() => { }); }
                 else if (state.step === 'awaiting_add_amount') {
                     const amount = parseInt(text);
-                    const targetRes = await db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1)", [state.username]);
+                    const targetRes = await db.query("SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)", [state.username]);
                     if (targetRes.rows.length > 0) {
-                        await db.query("UPDATE users SET points = points + $1 WHERE LOWER(username) = LOWER($2)", [amount, state.username]);
-                        await db.logTransaction(targetRes.rows[0].id, 'admin_add', amount, null, null, 'Added by Admin');
-                        bot.sendMessage(chatId, "✅ Done.").catch(() => { });
+                        const targetUser = targetRes.rows[0];
+                        await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [amount, targetUser.id]);
+
+                        // NEW: Update Admin Balance (Liability) because they (presumably) took cash
+                        await db.query("UPDATE users SET admin_balance = admin_balance + $1 WHERE id = $2", [amount, user.id]);
+                        const updatedAdmin = await db.query("SELECT admin_balance FROM users WHERE id = $1", [user.id]);
+                        const newBal = updatedAdmin.rows[0].admin_balance;
+
+                        await db.logTransaction(targetUser.id, 'admin_add', amount, null, null, 'Added by Admin');
+
+                        bot.sendMessage(chatId, `✅ Added ${amount} points to ${targetUser.username}.\n💼 Your New Balance: ${newBal}`).catch(() => { });
+
+                        // NEW: Notify Super Admins
+                        const superAdmins = await db.query("SELECT telegram_id FROM users WHERE role = 'super_admin'");
+                        superAdmins.rows.forEach(sa => {
+                            if (sa.telegram_id) {
+                                bot.sendMessage(sa.telegram_id, `🔔 **Admin Action Alert**\n\n👤 Admin: **${user.username}**\n➕ Added: ${amount} Points\nTo: ${targetUser.username}\n💼 New Admin Bal: ${newBal}`, { parse_mode: "Markdown" }).catch(() => { });
+                            }
+                        });
+
                     } else {
                         bot.sendMessage(chatId, "❌ User not found.").catch(() => { });
                     }
