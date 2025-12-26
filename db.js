@@ -69,6 +69,11 @@ async function initializeDatabase() {
                     ALTER TABLE users ADD COLUMN admin_balance INTEGER DEFAULT 0;
                 END IF;
 
+                -- FIX: Add admin_id to transactions
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'admin_id') THEN
+                    ALTER TABLE transactions ADD COLUMN admin_id INTEGER REFERENCES users(id);
+                END IF;
+
                 -- CRITICAL: Force points default to 0
                 ALTER TABLE users ALTER COLUMN points SET DEFAULT 0;
             END $$;
@@ -92,12 +97,12 @@ async function initializeDatabase() {
 
 initializeDatabase();
 
-const logTransaction = async (userId, type, amount, relatedUserId = null, gameId = null, description = '') => {
+const logTransaction = async (userId, type, amount, relatedUserId = null, gameId = null, description = '', adminId = null) => {
     try {
         await pool.query(
-            `INSERT INTO transactions (user_id, type, amount, related_user_id, game_id, description) 
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [userId, type, amount, relatedUserId, gameId, description]
+            `INSERT INTO transactions (user_id, type, amount, related_user_id, game_id, description, admin_id) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [userId, type, amount, relatedUserId, gameId, description, adminId]
         );
     } catch (e) {
         console.error("Failed to log transaction:", e);

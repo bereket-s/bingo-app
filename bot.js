@@ -1664,7 +1664,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                         const targetRes = await db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1)", [u]);
                         if (targetRes.rows.length > 0) {
                             await db.query("UPDATE users SET points = points + $1 WHERE LOWER(username) = LOWER($2)", [amt, u]);
-                            await db.logTransaction(targetRes.rows[0].id, 'admin_add', amt, null, null, 'Bulk Add by Admin');
+                            await db.logTransaction(targetRes.rows[0].id, 'admin_add', amt, null, null, 'Bulk Add by Admin', user.id);
                         }
                     }
                     delete chatStates[chatId];
@@ -1676,7 +1676,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                     const targetRes = await db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1)", [state.username]);
                     if (targetRes.rows.length > 0) {
                         await db.query("UPDATE users SET points = points - $1 WHERE LOWER(username) = LOWER($2)", [amount, state.username]);
-                        await db.logTransaction(targetRes.rows[0].id, 'admin_remove', -amount, null, null, 'Removed by Admin');
+                        await db.logTransaction(targetRes.rows[0].id, 'admin_remove', -amount, null, null, 'Removed by Admin', user.id);
                         bot.sendMessage(chatId, "✅ Done.").catch(() => { });
                     }
                     delete chatStates[chatId];
@@ -1768,12 +1768,12 @@ const startBot = (database, socketIo, startGameLogic) => {
 
                         if (action === 'add') {
                             await db.query("UPDATE users SET admin_balance = COALESCE(admin_balance, 0) + $1 WHERE id = $2", [amount, targetId]);
-                            await db.logTransaction(targetId, 'admin_bal_adj', amount, null, null, `SuperAdmin Added Balance`);
+                            await db.logTransaction(targetId, 'admin_bal_adj', amount, null, null, `SuperAdmin Added Balance`, user.id);
                             bot.sendMessage(chatId, `✅ **Added ${amount}** to ${state.targetAdmin.username}'s balance.`);
                             if (state.targetAdmin.telegram_id) bot.sendMessage(state.targetAdmin.telegram_id, `💎 **Super Admin Added Balance**\n➕ ${amount} added.`);
                         } else {
                             await db.query("UPDATE users SET admin_balance = COALESCE(admin_balance, 0) - $1 WHERE id = $2", [amount, targetId]);
-                            await db.logTransaction(targetId, 'admin_bal_adj', -amount, null, null, `SuperAdmin Removed Balance`);
+                            await db.logTransaction(targetId, 'admin_bal_adj', -amount, null, null, `SuperAdmin Removed Balance`, user.id);
                             bot.sendMessage(chatId, `✅ **Removed ${amount}** from ${state.targetAdmin.username}'s balance.`);
                             if (state.targetAdmin.telegram_id) bot.sendMessage(state.targetAdmin.telegram_id, `💎 **Super Admin Removed Balance**\n➖ ${amount} deducted.`);
                         }
