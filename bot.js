@@ -446,7 +446,18 @@ const startBot = (database, socketIo, startGameLogic) => {
                         const amount = foundTxn.amount;
                         await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [amount, user.id]);
                         await db.query("UPDATE bank_transactions SET status = 'claimed', claimed_by = $1 WHERE id = $2", [user.id, foundTxn.id]);
-                        await db.logTransaction(user.id, 'deposit', amount, null, null, `Auto-Deposit via OCR (Txn: ${foundTxn.txn_code})`);
+
+                        // NEW: Attribute to Bank Admin
+                        const bankAdminRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_admin_id'");
+                        const bankAdminId = bankAdminRes.rows.length ? parseInt(bankAdminRes.rows[0].value) : null;
+
+                        if (bankAdminId) {
+                            await db.query("UPDATE users SET admin_balance = COALESCE(admin_balance, 0) + $1 WHERE telegram_id = $2", [amount, bankAdminId]);
+                        }
+
+                        // Log Transaction
+                        const adminNote = bankAdminId ? ` (Credited to Admin ${bankAdminId})` : '';
+                        await db.logTransaction(user.id, 'deposit', amount, null, null, `Auto-Deposit via OCR${adminNote}`);
 
                         await bot.deleteMessage(chatId, scanMsg.message_id).catch(() => { });
                         bot.sendMessage(chatId, `✅ **Instant Deposit Success!**\n\nMatched Txn: ${foundTxn.txn_code}\nAmount: ${amount} ETB\n\nPoints Added.`, { reply_markup: userKeyboard });
@@ -698,6 +709,15 @@ const startBot = (database, socketIo, startGameLogic) => {
                 }
 
                 if (type === 'dep' || type === 'prem') {
+                    // CHECK PERMISSION: Only Bank Admin or Super Admin
+                    const bankAdminRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_admin_id'");
+                    const bankAdminId = bankAdminRes.rows.length ? parseInt(bankAdminRes.rows[0].value) : null;
+                    const isSuper = await isSuperAdmin(tgId);
+
+                    if (!isSuper && (!bankAdminId || bankAdminId !== tgId)) {
+                        return bot.answerCallbackQuery(cq.id, { text: "⛔ Permission Denied: Only the Bank Admin or Super Admin can approve this.", show_alert: true });
+                    }
+
                     const depRes = await db.query("SELECT * FROM deposits WHERE id = $1 AND status = 'pending' FOR UPDATE SKIP LOCKED", [targetId]);
                     if (depRes.rows.length === 0) return bot.answerCallbackQuery(cq.id, { text: "Already processed by another admin!", show_alert: true });
 
@@ -766,6 +786,14 @@ const startBot = (database, socketIo, startGameLogic) => {
 
                     const req = wdRes.rows[0];
                     const adminMsgIds = req.admin_msg_ids || {};
+                    const isSuper = await isSuperAdmin(tgId);
+
+                    // STRICT WITHDRAWAL CHECK: Only the Recipient Admin (who got the msg) or Super Admin can approve
+                    // We check if THIS admin received the message ID for this request.
+                    const assignedMsgId = adminMsgIds[String(tgId)];
+                    if (!isSuper && !assignedMsgId) {
+                        return bot.answerCallbackQuery(cq.id, { text: "⛔ Permission Denied: This withdrawal was routed to another Admin.", show_alert: true });
+                    }
 
                     if (decision === 'approve') {
                         // DEDUCT FROM ADMIN BALANCE (The one who clicked Approve)
@@ -906,7 +934,7 @@ const startBot = (database, socketIo, startGameLogic) => {
 
         if (text === "📜 Admin History") {
             if (await isSuperAdmin(tgId)) {
-                // Query last 30 admin actions including deposit/withdraw approvals and manual adds
+                // Query last 50 admin actions including deposit/withdraw approvals and manual adds
                 const history = await db.query(
                     `SELECT t.created_at, t.type, t.amount, t.description, 
                             u.username as admin_name, 
@@ -915,7 +943,8 @@ const startBot = (database, socketIo, startGameLogic) => {
                      LEFT JOIN users u ON t.admin_id = u.id
                      LEFT JOIN users target ON t.user_id = target.id
                      WHERE t.admin_id IS NOT NULL 
-                     ORDER BY t.created_at DESC LIMIT 30`
+                        OR t.type IN ('deposit', 'withdraw')
+                     ORDER BY t.created_at DESC LIMIT 50`
                 );
 
                 if (history.rows.length === 0) {
@@ -1512,7 +1541,8 @@ const startBot = (database, socketIo, startGameLogic) => {
                             msgIds[targetAdminId] = m.message_id;
                         } catch (e) { console.error("Failed to send to rich admin", e); }
                     } else {
-                        // Fallback to all admins if no balance info
+                        // Fallback to all admins if no balance info OR Super Admin fallback
+                        // Only if NO rich admin found, which shouldn't happen unless 0 admins.
                         msgIds = await broadcastToAdmins(adminMsg, { parse_mode: "Markdown", reply_markup: markup });
                     }
 
@@ -1621,6 +1651,10 @@ const startBot = (database, socketIo, startGameLogic) => {
 
                 else if (state.step === 'awaiting_bank_update') {
                     await db.query("INSERT INTO system_settings (key, value) VALUES ('bank_details', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text]);
+
+                    // SAVE ADMIN ID AS BANK ADMIN
+                    await db.query("INSERT INTO system_settings (key, value) VALUES ('bank_admin_id', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [String(tgId)]);
+
                     delete chatStates[chatId];
                     bot.sendMessage(chatId, "✅ Bank Details Updated!", { reply_markup: adminKeyboard }).catch(() => { });
 
