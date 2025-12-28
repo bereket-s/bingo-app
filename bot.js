@@ -591,6 +591,32 @@ const startBot = (database, socketIo, startGameLogic) => {
                     await bot.editMessageText(`${msg.text}\n\n✅ **DAY ENDED & BROADCAST SENT**`, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: { inline_keyboard: [] } });
                 } catch (e) { }
 
+                // 1.5 DEDUCT NET PROFIT FROM BANK ADMIN
+                // Logic: The "Bank Admin" holds the cash. The "System Profit" is money that belongs to the house, not the bank admin's liability.
+                // So we reduce their liability (admin_balance) by the profit amount.
+                // Wait, if they hold the cash, and profit is "house money", technically...
+                // User said: "remove the profit balance from the admin whose bank is set".
+                // If Admin has +1000 balance (liability), and we made 200 profit.
+                // If we remove 200 from their balance, they now owe 800.
+                // This implies the 200 is "theirs" or "system's" and is no longer a debt to players.
+                // Correct.
+                try {
+                    const bankAdminRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_admin_id'");
+                    const bankAdminId = bankAdminRes.rows.length ? parseInt(bankAdminRes.rows[0].value) : null;
+
+                    // We need the profit amount. It's in daily_reports.
+                    const report = await db.query("SELECT net_profit FROM daily_reports WHERE date = CURRENT_DATE");
+                    if (report.rows.length > 0 && bankAdminId) {
+                        const profit = report.rows[0].net_profit;
+                        await db.query("UPDATE users SET admin_balance = COALESCE(admin_balance, 0) - $1 WHERE telegram_id = $2", [profit, bankAdminId]);
+                        await db.logTransaction(bankAdminId, 'system_profit_deduct', -profit, null, null, `End Day Profit Deduction`, bankAdminId); // Log for history
+
+                        // Notify Bank Admin
+                        bot.sendMessage(bankAdminId, `📉 **End of Day Update**\n\nNet Profit (${profit}) has been deducted from your Admin Balance.`).catch(() => { });
+                    }
+                } catch (e) { console.error("Profit Deduct Error", e); }
+
+
                 // 2. Broadcast to ALL users
                 const broadcastMessage =
                     "📢 **Game Update**\n\n" +
@@ -601,7 +627,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 await broadcastToAllUsers(broadcastMessage);
 
                 // 3. Confirm
-                await bot.sendMessage(chatId, "✅ Broadcast sent to all users.");
+                await bot.sendMessage(chatId, "✅ Broadcast sent. Profit deducted from Bank Admin.");
                 return;
             }
 
@@ -732,8 +758,18 @@ const startBot = (database, socketIo, startGameLogic) => {
                             // UPDATED: Pass adminID
                             await db.logTransaction(deposit.user_id, 'deposit', parseInt(val), null, null, `Deposit Approved by ${adminUser?.username}`, adminUser.id);
 
-                            // NEW: Update Admin Balance
-                            await db.query("UPDATE users SET admin_balance = COALESCE(admin_balance, 0) + $1 WHERE id = $2", [parseInt(val), tgId]);
+                            // NEW: Update BANK Admin Balance (Not necessarily Approver)
+                            const bankAdminRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_admin_id'");
+                            const bankAdminId = bankAdminRes.rows.length ? parseInt(bankAdminRes.rows[0].value) : null;
+
+                            // If Bank Admin exists, credit THEM. Else credit approver (fallback).
+                            const creditTargetId = bankAdminId ? bankAdminId : tgId;
+
+                            if (bankAdminId) {
+                                await db.query("UPDATE users SET admin_balance = COALESCE(admin_balance, 0) + $1 WHERE telegram_id = $2", [parseInt(val), bankAdminId]);
+                            } else {
+                                await db.query("UPDATE users SET admin_balance = COALESCE(admin_balance, 0) + $1 WHERE id = $2", [parseInt(val), tgId]);
+                            }
 
                             const doneText = `✅ *APPROVED by ${adminUser?.username}*\n+${val} Points\n(User: ${deposit.user_id})`;
                             await syncAdminMessages(adminMsgIds, doneText, tgId);
@@ -788,10 +824,10 @@ const startBot = (database, socketIo, startGameLogic) => {
                     const adminMsgIds = req.admin_msg_ids || {};
                     const isSuper = await isSuperAdmin(tgId);
 
-                    // STRICT WITHDRAWAL CHECK: Only the Recipient Admin (who got the msg) or Super Admin can approve
-                    // We check if THIS admin received the message ID for this request.
+                    // STRICT WITHDRAWAL CHECK: Only the Recipient Admin (who got the msg) can approve.
+                    // Even Super Admin CANNOT approve if it wasn't routed to them.
                     const assignedMsgId = adminMsgIds[String(tgId)];
-                    if (!isSuper && !assignedMsgId) {
+                    if (!assignedMsgId) {
                         return bot.answerCallbackQuery(cq.id, { text: "⛔ Permission Denied: This withdrawal was routed to another Admin.", show_alert: true });
                     }
 
@@ -934,24 +970,30 @@ const startBot = (database, socketIo, startGameLogic) => {
 
         if (text === "📜 Admin History") {
             if (await isSuperAdmin(tgId)) {
-                // Query last 50 admin actions including deposit/withdraw approvals and manual adds
+                // Expanded History Query
                 const history = await db.query(
                     `SELECT t.created_at, t.type, t.amount, t.description, 
                             u.username as admin_name, 
-                            target.username as target_name
+                            target.username as target_name,
+                            target.telegram_id as target_tg,
+                            u.telegram_id as admin_tg
                      FROM transactions t
                      LEFT JOIN users u ON t.admin_id = u.id
                      LEFT JOIN users target ON t.user_id = target.id
                      WHERE t.admin_id IS NOT NULL 
-                        OR t.type IN ('deposit', 'withdraw')
+                        OR t.type IN ('deposit', 'withdraw', 'system_profit_deduct')
                      ORDER BY t.created_at DESC LIMIT 50`
                 );
 
                 if (history.rows.length === 0) {
                     bot.sendMessage(chatId, "📭 No admin history found yet.");
                 } else {
-                    let logMsg = "📜 **Admin Action History**\n\n";
+                    let logMsg = "📜 **ADMIN HISTORY LOG**\n\n";
                     let currentDay = "";
+
+                    // Bank Admin Info
+                    const bankAdminRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_admin_id'");
+                    const bankAdminId = bankAdminRes.rows.length ? bankAdminRes.rows[0].value : null;
 
                     history.rows.forEach(row => {
                         const date = new Date(row.created_at);
@@ -959,24 +1001,42 @@ const startBot = (database, socketIo, startGameLogic) => {
                         const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
                         if (dayStr !== currentDay) {
-                            logMsg += `📅 *${dayStr}*\n`;
+                            logMsg += `📅 *${dayStr.toUpperCase()}*\n`;
                             currentDay = dayStr;
                         }
 
                         let icon = "🔧";
-                        if (row.type === 'admin_add') icon = "➕";
-                        if (row.type === 'admin_remove') icon = "➖";
-                        if (row.type === 'deposit') icon = "🏦";
-                        if (row.type === 'withdraw') icon = "🏧";
-                        if (row.type === 'admin_bal_adj') icon = "💎";
+                        let title = "ACTION";
+                        let sign = "";
 
-                        logMsg += `\`${timeStr}\` ${icon} **${row.admin_name || 'System'}**\n`;
-                        logMsg += `   └ ${row.description}\n`;
-                        if (row.target_name) logMsg += `   └ Target: ${row.target_name} (${row.amount > 0 ? '+' : ''}${row.amount})\n\n`;
-                        else logMsg += `   └ Amount: ${row.amount}\n\n`;
+                        // DEPOSITS
+                        if (row.type === 'deposit') {
+                            icon = "🟢";
+                            title = "DEPOSIT APPROVED";
+                            sign = "+";
+                        }
+                        // WITHDRAWALS
+                        else if (row.type === 'withdraw') {
+                            icon = "🔴";
+                            title = "WITHDRAWAL PAID";
+                            sign = ""; // Amount stored as negative
+                        }
+                        // POINTS ADD/REMOVE
+                        else if (row.type === 'admin_add') { icon = "➕"; title = "POINTS ADDED"; sign = "+"; }
+                        else if (row.type === 'admin_remove') { icon = "➖"; title = "POINTS REMOVED"; sign = ""; } // stored neg
+                        else if (row.type === 'system_profit_deduct') { icon = "📉"; title = "PROFIT DEDUCTED"; sign = ""; }
+
+                        let adminTag = row.admin_name || 'System';
+                        if (row.admin_tg && String(row.admin_tg) === String(bankAdminId)) adminTag += " (🏦 Bank)";
+
+                        const amountStr = `${sign}${row.amount}`;
+
+                        logMsg += `${icon} **${title}** \`(${timeStr})\`\n`;
+                        logMsg += `├ 💰 Amount: **${amountStr}**\n`;
+                        if (row.target_name) logMsg += `├ 👤 Player: ${row.target_name}\n`;
+                        logMsg += `└ 👮 Admin: ${adminTag}\n\n`;
                     });
 
-                    // Split if too long (Telegram limit 4096)
                     if (logMsg.length > 4000) {
                         const chunks = logMsg.match(/.{1,4000}/g);
                         chunks.forEach(chunk => bot.sendMessage(chatId, chunk, { parse_mode: "Markdown" }));
@@ -1710,8 +1770,13 @@ const startBot = (database, socketIo, startGameLogic) => {
                     const targetRes = await db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1)", [state.username]);
                     if (targetRes.rows.length > 0) {
                         await db.query("UPDATE users SET points = points - $1 WHERE LOWER(username) = LOWER($2)", [amount, state.username]);
+
+                        // DEDUCT FROM ADMIN BALANCE ALSO (They took the points back = cash back to them)
+                        // User Request: "When the admin removes points, it must be deducted from their balance also"
+                        await db.query("UPDATE users SET admin_balance = COALESCE(admin_balance, 0) - $1 WHERE id = $2", [amount, user.id]);
+
                         await db.logTransaction(targetRes.rows[0].id, 'admin_remove', -amount, null, null, 'Removed by Admin', user.id);
-                        bot.sendMessage(chatId, "✅ Done.").catch(() => { });
+                        bot.sendMessage(chatId, `✅ Removed ${amount} points.\nDeducted from your Admin Balance.`).catch(() => { });
                     }
                     delete chatStates[chatId];
                 }
