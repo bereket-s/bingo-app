@@ -1,22 +1,22 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
-const https = require('https'); 
+const https = require('https');
 const { Server } = require('socket.io');
-const path = require('path'); 
-const bodyParser = require('body-parser'); 
+const path = require('path');
+const bodyParser = require('body-parser');
 
-const db = require('./db'); 
-const { startBot } = require('./bot'); 
-const { initializeSocketListeners, startGameLogic } = require('./gameManager'); 
+const db = require('./db');
+const { startBot } = require('./bot');
+const { initializeSocketListeners, startGameLogic } = require('./gameManager');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: "*", 
-    methods: ["GET", "POST"]
-  }
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
 });
 
 const PORT = process.env.PORT || 3001;
@@ -43,7 +43,7 @@ app.post('/api/sms-webhook', async (req, res) => {
     if (message.includes('telebirr') || from.toLowerCase().includes('telebirr') || message.includes('Ethio telecom')) {
         const telebirrTxn = message.match(/transaction number is\s*([A-Z0-9]+)/i);
         const telebirrAmount = message.match(/received\s*(ETB|Birr)\s*([0-9,]+(\.[0-9]{2})?)/i);
-        
+
         if (telebirrTxn) txnId = telebirrTxn[1];
         if (telebirrAmount) amount = parseFloat(telebirrAmount[2].replace(/,/g, ''));
     }
@@ -62,7 +62,7 @@ app.post('/api/sms-webhook', async (req, res) => {
     if (!txnId && message.toUpperCase().startsWith("TEST")) {
         const testParts = message.split(" ");
         if (testParts.length >= 2) {
-            txnId = "TEST-" + Date.now().toString().slice(-6); 
+            txnId = "TEST-" + Date.now().toString().slice(-6);
             amount = parseFloat(testParts[1]);
             console.log("🛠️ Debug SMS detected. Generated ID:", txnId);
         }
@@ -89,31 +89,35 @@ app.post('/api/sms-webhook', async (req, res) => {
 });
 
 app.get('*', (req, res) => {
-  if (require('fs').existsSync(path.join(buildPath, 'index.html'))) {
-    res.sendFile(path.join(buildPath, 'index.html'));
-  } else {
-    res.send('<h1>Bingo Server is Running</h1>');
-  }
+    if (require('fs').existsSync(path.join(buildPath, 'index.html'))) {
+        res.sendFile(path.join(buildPath, 'index.html'));
+    } else {
+        res.send('<h1>Bingo Server is Running</h1>');
+    }
 });
 
 initializeSocketListeners(io);
-startBot(db, io, startGameLogic);
+if (process.env.DISABLE_BOT === 'true') {
+    console.log("⚠️ Bot startup SKIPPED (DISABLE_BOT=true in .env)");
+} else {
+    startBot(db, io, startGameLogic);
+}
 
 server.listen(PORT, () => {
-  console.log(`✅ Server listening on http://localhost:${PORT}`);
+    console.log(`✅ Server listening on http://localhost:${PORT}`);
 
-  // --- AGGRESSIVE KEEP-ALIVE ---
-  const publicUrl = process.env.PUBLIC_URL;
-  if (publicUrl && publicUrl.startsWith('http')) {
-      console.log(`⏰ Keep-Alive: Monitoring ${publicUrl}`);
-      const pingServer = () => {
-          https.get(publicUrl, (res) => {
-              console.log(`⏰ Keep-Alive Ping: Status ${res.statusCode}`);
-          }).on('error', (e) => {
-              console.error(`❌ Keep-Alive Error: ${e.message}`);
-          });
-      };
-      pingServer();
-      setInterval(pingServer, 5 * 60 * 1000); 
-  }
+    // --- AGGRESSIVE KEEP-ALIVE ---
+    const publicUrl = process.env.PUBLIC_URL;
+    if (publicUrl && publicUrl.startsWith('http')) {
+        console.log(`⏰ Keep-Alive: Monitoring ${publicUrl}`);
+        const pingServer = () => {
+            https.get(publicUrl, (res) => {
+                console.log(`⏰ Keep-Alive Ping: Status ${res.statusCode}`);
+            }).on('error', (e) => {
+                console.error(`❌ Keep-Alive Error: ${e.message}`);
+            });
+        };
+        pingServer();
+        setInterval(pingServer, 5 * 60 * 1000);
+    }
 });
