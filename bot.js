@@ -880,6 +880,9 @@ const startBot = (database, socketIo, startGameLogic) => {
                 if (sender.rows.length && sender.rows[0].telegram_id) {
                     bot.sendMessage(sender.rows[0].telegram_id, `✅ **Transfer Completed!**\n\n${transfer.amount} deducted from your balance.`);
                 }
+
+                // LOG TRANSACTION
+                await db.logTransaction(transfer.to_admin_id, 'admin_transfer', transfer.amount, null, null, `Transfer from Admin ${sender.rows[0]?.username}`, transfer.from_admin_id);
             }
 
             if (action.startsWith('adm_bal_')) {
@@ -981,7 +984,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                      LEFT JOIN users u ON t.admin_id = u.id
                      LEFT JOIN users target ON t.user_id = target.id
                      WHERE t.admin_id IS NOT NULL 
-                        OR t.type IN ('deposit', 'withdraw', 'system_profit_deduct')
+                        OR t.type IN ('deposit', 'withdraw', 'system_profit_deduct', 'admin_bal_adj', 'admin_transfer')
                      ORDER BY t.created_at DESC LIMIT 50`
                 );
 
@@ -1026,6 +1029,18 @@ const startBot = (database, socketIo, startGameLogic) => {
                         else if (row.type === 'admin_remove') { icon = "➖"; title = "POINTS REMOVED"; sign = ""; } // stored neg
                         else if (row.type === 'system_profit_deduct') { icon = "📉"; title = "PROFIT DEDUCTED"; sign = ""; }
 
+                        // NEW TYPES
+                        else if (row.type === 'admin_bal_adj') {
+                            icon = "💎";
+                            title = "ADMIN BALANCE ADJ";
+                            sign = row.amount > 0 ? "+" : "";
+                        }
+                        else if (row.type === 'admin_transfer') {
+                            icon = "💸";
+                            title = "ADMIN TRANSFER";
+                            sign = "+";
+                        }
+
                         let adminTag = row.admin_name || 'System';
                         if (row.admin_tg && String(row.admin_tg) === String(bankAdminId)) adminTag += " (🏦 Bank)";
 
@@ -1033,8 +1048,8 @@ const startBot = (database, socketIo, startGameLogic) => {
 
                         logMsg += `${icon} **${title}** \`(${timeStr})\`\n`;
                         logMsg += `├ 💰 Amount: **${amountStr}**\n`;
-                        if (row.target_name) logMsg += `├ 👤 Player: ${row.target_name}\n`;
-                        logMsg += `└ 👮 Admin: ${adminTag}\n\n`;
+                        if (row.target_name) logMsg += `├ 👤 Target/Player: ${row.target_name}\n`;
+                        logMsg += `└ 👮 Admin/Sender: ${adminTag}\n\n`;
                     });
 
                     if (logMsg.length > 4000) {
