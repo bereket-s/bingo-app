@@ -1054,9 +1054,12 @@ const startBot = (database, socketIo, startGameLogic) => {
 
                     if (logMsg.length > 4000) {
                         const chunks = logMsg.match(/.{1,4000}/g);
-                        chunks.forEach(chunk => bot.sendMessage(chatId, chunk, { parse_mode: "Markdown" }));
+                        for (const chunk of chunks) {
+                            await bot.sendMessage(chatId, chunk, { parse_mode: "Markdown" });
+                            await new Promise(r => setTimeout(r, 300));
+                        }
                     } else {
-                        bot.sendMessage(chatId, logMsg, { parse_mode: "Markdown" });
+                        await bot.sendMessage(chatId, logMsg, { parse_mode: "Markdown" });
                     }
                 }
             }
