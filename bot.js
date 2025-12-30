@@ -91,7 +91,7 @@ const startBot = (database, socketIo, startGameLogic) => {
     });
 
     bot.on('polling_error', (error) => {
-        if (['EFATAL', 'ECONNRESET', 'ETIMEDOUT'].includes(error.code)) return;
+        if (['EFATAL', 'ECONNRESET', 'ETIMEDOUT'].includes(error.code) || error.message.includes('409 Conflict')) return;
         console.error(`[Polling Error] ${error.code}: ${error.message}`);
     });
 
