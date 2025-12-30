@@ -127,35 +127,42 @@ header { display: flex; justify-content: space-between; align-items: center; pad
 }
 .mini-ball { width: 35px; height: 35px; background: #30475e; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.8em; flex-shrink: 0; color: #ccc; white-space: nowrap; }
 
-/* --- UPDATED: Horizontal Scroll for Active Cards (Responsive) --- */
+/* --- UPDATED: Responsive Grid for Active Cards --- */
 .my-cards-container { 
     display: flex; 
-    flex-direction: row; 
-    flex-wrap: nowrap;   
-    overflow-x: auto;    
-    gap: 20px; 
+    flex-wrap: wrap; /* Wrap to next line */
+    justify-content: center; /* Center items */
+    gap: 15px; 
     padding: 10px;
     padding-bottom: 30px; 
-    align-items: flex-start;
-    scroll-snap-type: x mandatory; 
-    -webkit-overflow-scrolling: touch; 
 }
 
-/* If only one card, center it and allow it to be wider */
 .player-card-wrapper { 
     background: #16213e; 
     padding: 10px; 
     border-radius: 12px; 
     border: 1px solid #30475e;
-    flex: 0 0 85%; /* Default: Peek next card */
-    max-width: 350px; 
-    scroll-snap-align: center; 
+    
+    /* Responsive Width Logic */
+    flex: 1 1 300px; /* Grow, Shrink, Base 300px */
+    max-width: 400px; /* Don't get too wide */
+    min-width: 280px; /* Don't get too small */
 }
 
-/* Logic: If there is exactly one card, make it 100% width (up to max-width) and centered */
+/* If only one card, prevent it from stretching too much */
 .player-card-wrapper:only-child {
-    flex: 0 0 100%;
-    margin: 0 auto;
+    max-width: 350px;
+}
+
+.card-title { font-size: 0.9em; color: #888; margin-bottom: 5px; text-align: left; padding-left: 5px; }
+
+/* Locked Button Style */
+.num-btn.locked {
+    background: #222;
+    border-color: #444;
+    color: #666;
+    cursor: not-allowed;
+    opacity: 0.7;
 }
 
 .card-title { font-size: 0.9em; color: #888; margin-bottom: 5px; text-align: left; padding-left: 5px; }

@@ -565,18 +565,23 @@ function App() {
                                                     const isMine = state.takenBy === auth.userId;
                                                     const isBeingViewed = state.viewers.length > 0;
 
-                                                    // NEW: Hide taken cards instead of locking
-                                                    if (isTaken) return null;
+                                                    // LOCKED / TAKEN LOGIC
+                                                    const isLocked = isTaken;
 
                                                     return (
                                                         <button
                                                             key={opt.id}
-                                                            className={`num-btn ${isMine ? 'mine' : ''} ${isBeingViewed ? 'viewing' : ''}`}
-                                                            onClick={() => !isMine && !isBeingViewed && setSelectedOption(opt)}
-                                                            disabled={isMine || isBeingViewed}
+                                                            className={`num-btn ${isMine ? 'mine' : ''} ${isLocked ? 'locked' : ''} ${isBeingViewed ? 'viewing' : ''}`}
+                                                            onClick={() => {
+                                                                // Allow viewing if it's mine OR if it's available (not taken/viewed)
+                                                                if (isMine) setSelectedOption(opt);
+                                                                else if (!isLocked && !isBeingViewed) setSelectedOption(opt);
+                                                            }}
+                                                            disabled={isLocked && !isMine} // Disabled only if someone else took it
                                                         >
-                                                            {opt.label || `${opt.id}`}
-                                                            {!isTaken && isBeingViewed && <span className="view-badge">{t('cardView')}</span>}
+                                                            {isLocked ? "🔒" : (opt.label || `${opt.id}`)}
+                                                            {isMine && <span className="view-badge">✔</span>}
+                                                            {!isLocked && isBeingViewed && <span className="view-badge">{t('cardView')}</span>}
                                                         </button>
                                                     );
                                                 })}
