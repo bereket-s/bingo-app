@@ -474,9 +474,9 @@ function initializeSocketListeners(io) {
 
             // 2. Try to fill from 1 to 100 first (The "100 Fixed Cards" requirement)
             for (let i = 1; i <= 100; i++) {
-                if (!takenIds.has(i)) {
-                    availableOptions.push(i);
-                }
+                // FIXED: Include taken cards so they show as "Locked" instead of disappearing
+                availableOptions.push(i);
+
                 // If we have enough for display, stop. But respect 100 minimum.
                 if (availableOptions.length >= dynamicLimit) break;
             }
