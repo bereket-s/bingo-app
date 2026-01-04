@@ -122,9 +122,10 @@ const startBot = (database, socketIo, startGameLogic) => {
         keyboard: [
             ...adminKeyboard.keyboard,
             [{ text: "📢 Announce Game Day" }],
-            [{ text: "👥 View Admins" }, { text: "✏️ Edit User" }],
+            [{ text: "👥 View Admins" }, { text: "👤 Manage User" }],
             [{ text: "👑 Promote Admin" }, { text: "🔻 Demote Admin" }],
-            [{ text: "💸 Admin Transfer" }, { text: "📜 Admin History" }]
+            [{ text: "💸 Admin Transfer" }, { text: "📜 Admin History" }],
+            [{ text: "🌟 Premium Players" }]
         ],
         resize_keyboard: true,
         persistent: true
@@ -740,8 +741,14 @@ const startBot = (database, socketIo, startGameLogic) => {
                     const bankAdminId = bankAdminRes.rows.length ? parseInt(bankAdminRes.rows[0].value) : null;
                     const isSuper = await isSuperAdmin(tgId);
 
-                    if (!isSuper && (!bankAdminId || bankAdminId !== tgId)) {
-                        return bot.answerCallbackQuery(cq.id, { text: "⛔ Permission Denied: Only the Bank Admin or Super Admin can approve this.", show_alert: true });
+                    if (type === 'dep') {
+                        if (!isSuper && (!bankAdminId || bankAdminId !== tgId)) {
+                            return bot.answerCallbackQuery(cq.id, { text: "⛔ Permission Denied: Only the Bank Admin or Super Admin can approve this.", show_alert: true });
+                        }
+                    } else if (type === 'prem') {
+                        if (!isSuper) {
+                            return bot.answerCallbackQuery(cq.id, { text: "⛔ Permission Denied: Only the Super Admin can approve Premium requests.", show_alert: true });
+                        }
                     }
 
                     const depRes = await db.query("SELECT * FROM deposits WHERE id = $1 AND status = 'pending' FOR UPDATE SKIP LOCKED", [targetId]);
@@ -885,6 +892,62 @@ const startBot = (database, socketIo, startGameLogic) => {
                 await db.logTransaction(transfer.to_admin_id, 'admin_transfer', transfer.amount, null, null, `Transfer from Admin ${sender.rows[0]?.username}`, transfer.from_admin_id);
             }
 
+            if (action.startsWith('mng_')) {
+                const act = action.replace('mng_', '');
+                if (!chatStates[chatId] || !chatStates[chatId].targetUser) {
+                    return bot.answerCallbackQuery(cq.id, { text: "Session expired. Search user again.", show_alert: true });
+                }
+                const targetUser = chatStates[chatId].targetUser;
+
+                if (act === 'rename') {
+                    chatStates[chatId].step = 'awaiting_edit_newname';
+                    bot.sendMessage(chatId, `👇 **Enter New Username for ${targetUser.username}:**`, { reply_markup: { force_reply: true } });
+                }
+                else if (act === 'give_prem') {
+                    const kb = {
+                        inline_keyboard: [
+                            [{ text: "1 Month", callback_data: "mng_prem_1m" }],
+                            [{ text: "3 Months", callback_data: "mng_prem_3m" }],
+                            [{ text: "6 Months", callback_data: "mng_prem_6m" }],
+                            [{ text: "1 Year", callback_data: "mng_prem_1y" }]
+                        ]
+                    };
+                    bot.sendMessage(chatId, "💎 Select Premium Duration:", { reply_markup: kb });
+                }
+                else if (act.startsWith('prem_')) {
+                    const dur = act.replace('prem_', '');
+                    let months = 1;
+                    if (dur === '3m') months = 3;
+                    if (dur === '6m') months = 6;
+                    if (dur === '1y') months = 12;
+
+                    const expiry = dayjs().add(months, 'month').format();
+                    await db.query("UPDATE users SET premium_expires_at = $1, pref_auto_daub = TRUE, pref_auto_bingo = TRUE WHERE id = $2", [expiry, targetUser.id]);
+
+                    bot.sendMessage(chatId, `✅ Given **${dur}** Premium to ${targetUser.username}.`);
+                    if (targetUser.telegram_id) bot.sendMessage(targetUser.telegram_id, `🌟 **You have been given Premium!**\nDuration: ${dur}`).catch(() => { });
+                    delete chatStates[chatId];
+                }
+                else if (act === 'cancel_prem') {
+                    await db.query("UPDATE users SET premium_expires_at = NULL, pref_auto_daub = FALSE WHERE id = $1", [targetUser.id]);
+                    bot.sendMessage(chatId, `❌ Premium Cancelled for ${targetUser.username}.`);
+                    if (targetUser.telegram_id) bot.sendMessage(targetUser.telegram_id, `❌ Your Premium Subscription has been cancelled by Admin.`).catch(() => { });
+                    delete chatStates[chatId];
+                }
+                else if (act === 'delete') {
+                    const uid = targetUser.id;
+                    await db.query("DELETE FROM player_cards WHERE user_id = $1", [uid]);
+                    await db.query("DELETE FROM deposits WHERE user_id = $1", [uid]);
+                    await db.query("DELETE FROM transactions WHERE user_id = $1 OR related_user_id = $1", [uid]);
+                    await db.query("UPDATE games SET winner_id = NULL WHERE winner_id = $1", [uid]);
+                    await db.query("DELETE FROM users WHERE id = $1", [uid]);
+                    bot.sendMessage(chatId, `🗑️ **${targetUser.username}** deleted permanently.`);
+                    delete chatStates[chatId];
+                }
+                await bot.answerCallbackQuery(cq.id);
+                return;
+            }
+
             if (action.startsWith('adm_bal_')) {
                 const act = action.replace('adm_bal_', ''); // 'add' or 'remove'
                 if (chatStates[chatId] && chatStates[chatId].step === 'awaiting_adm_bal_action') {
@@ -951,10 +1014,28 @@ const startBot = (database, socketIo, startGameLogic) => {
             return;
         }
 
-        if (text === "✏️ Edit User") {
+        if (text === "👤 Manage User") {
             if (await isSuperAdmin(tgId)) {
                 chatStates[chatId] = { step: 'awaiting_edit_search' };
-                bot.sendMessage(chatId, "✏️ **Edit User Mode**\n\nSend the **Phone Number** or **Current Username** of the player you want to edit:", { parse_mode: "Markdown", reply_markup: { force_reply: true } });
+                bot.sendMessage(chatId, "👤 **Manage User**\n\nSend the **Phone Number** or **Current Username** of the player:", { parse_mode: "Markdown", reply_markup: { force_reply: true } });
+            }
+            return;
+        }
+
+        if (text === "🌟 Premium Players") {
+            if (await isSuperAdmin(tgId)) {
+                const res = await db.query("SELECT username, phone_number, premium_expires_at FROM users WHERE premium_expires_at > NOW() ORDER BY premium_expires_at ASC");
+                if (res.rows.length === 0) {
+                    bot.sendMessage(chatId, "🌟 No active premium players.");
+                } else {
+                    let msg = "🌟 **Active Premium Players** 🌟\n\n";
+                    res.rows.forEach((u, i) => {
+                        const exp = dayjs(u.premium_expires_at).format('DD/MM/YYYY');
+                        msg += `${i + 1}. **${u.username}** (${u.phone_number}) - Ends: ${exp}\n`;
+                    });
+                    msg += "\n💡 *To manage/cancel, use '👤 Manage User'*";
+                    bot.sendMessage(chatId, msg, { parse_mode: "Markdown" });
+                }
             }
             return;
         }
@@ -1098,7 +1179,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             return;
         }
 
-        const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ Guide", "🗑️ Delete User", "🔧 SMS & Webhook", "📱 App Link", "📢 Announce Game Day", "✏️ Edit User", "👥 View Admins", "🕹 Active Games", "💰 End Day Report"];
+        const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ Guide", "🗑️ Delete User", "🔧 SMS & Webhook", "📱 App Link", "📢 Announce Game Day", "👤 Manage User", "👥 View Admins", "🕹 Active Games", "💰 End Day Report", "🌟 Premium Players"];
         if (mainMenuButtons.some(btn => text.startsWith(btn))) {
             if (chatStates[chatId]) delete chatStates[chatId];
         }
@@ -1833,9 +1914,29 @@ const startBot = (database, socketIo, startGameLogic) => {
                         delete chatStates[chatId];
                     } else {
                         const targetUser = res.rows[0];
-                        state.targetUserId = targetUser.id;
-                        state.step = 'awaiting_edit_newname';
-                        bot.sendMessage(chatId, `👤 Found: **${targetUser.username}**\nPhone: ${targetUser.phone_number}\nPoints: ${targetUser.points}\n\n👇 **Enter New Username:**`, { parse_mode: "Markdown", reply_markup: { force_reply: true } });
+                        state.targetUser = targetUser;
+                        state.step = 'awaiting_manage_action';
+
+                        let premStatus = "Inactive";
+                        if (targetUser.premium_expires_at) {
+                            const exp = dayjs(targetUser.premium_expires_at);
+                            if (exp.isAfter(dayjs())) premStatus = `✅ Active until ${exp.format('DD/MM/YYYY')}`;
+                        }
+
+                        const msg = `👤 **Manage User: ${targetUser.username}**\n` +
+                            `📱 Phone: ${targetUser.phone_number}\n` +
+                            `💰 Points: ${targetUser.points}\n` +
+                            `🌟 Premium: ${premStatus}\n\n` +
+                            `👇 **Select Action:**`;
+
+                        const kb = {
+                            inline_keyboard: [
+                                [{ text: "✏️ Change Username", callback_data: "mng_rename" }],
+                                [{ text: "➕ Give Premium", callback_data: "mng_give_prem" }, { text: "❌ Cancel Premium", callback_data: "mng_cancel_prem" }],
+                                [{ text: "🗑️ Delete User (DANGER)", callback_data: "mng_delete" }]
+                            ]
+                        };
+                        bot.sendMessage(chatId, msg, { parse_mode: "Markdown", reply_markup: kb });
                     }
                 }
                 else if (state.step === 'awaiting_edit_newname') {
@@ -1847,7 +1948,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                         if (check.rows.length > 0) {
                             bot.sendMessage(chatId, "❌ Username already taken.");
                         } else {
-                            await db.query("UPDATE users SET username = $1 WHERE id = $2", [newName, state.targetUserId]);
+                            await db.query("UPDATE users SET username = $1 WHERE id = $2", [newName, state.targetUser.id]);
                             bot.sendMessage(chatId, `✅ Username updated to **${newName}**!`, { parse_mode: "Markdown" });
                         }
                     }
