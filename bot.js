@@ -125,7 +125,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             [{ text: "👥 View Admins" }, { text: "👤 Manage User" }],
             [{ text: "👑 Promote Admin" }, { text: "🔻 Demote Admin" }],
             [{ text: "💸 Admin Transfer" }, { text: "📜 Admin History" }],
-            [{ text: "🌟 Premium Players" }]
+            [{ text: "🌟 Premium Players" }, { text: "⚙️ Premium Settings" }]
         ],
         resize_keyboard: true,
         persistent: true
@@ -643,8 +643,17 @@ const startBot = (database, socketIo, startGameLogic) => {
             if (action.startsWith('pkg_')) {
                 const duration = action.replace('pkg_', '');
                 chatStates[chatId] = { step: 'awaiting_premium_proof', duration: duration };
-                const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
-                bot.sendMessage(chatId, `💎 *Selected: ${duration}*\nPay via:\n${bankRes.rows[0]?.value}\n👇 *Send Screenshot:*`, { parse_mode: "Markdown" }).catch(() => { });
+
+                // Fetch Premium Specific Bank or Default
+                const premBankRes = await db.query("SELECT value FROM system_settings WHERE key = 'prem_bank_details'");
+                let bankInfo = premBankRes.rows.length ? premBankRes.rows[0].value : null;
+
+                if (!bankInfo) {
+                    const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
+                    bankInfo = bankRes.rows[0]?.value || 'Contact Admin';
+                }
+
+                bot.sendMessage(chatId, `💎 *Selected: ${duration}*\nPay via:\n${bankInfo}\n👇 *Send Screenshot:*`, { parse_mode: "Markdown" }).catch(() => { });
                 return;
             }
 
@@ -944,6 +953,31 @@ const startBot = (database, socketIo, startGameLogic) => {
                     bot.sendMessage(chatId, `🗑️ **${targetUser.username}** deleted permanently.`);
                     delete chatStates[chatId];
                 }
+                if (act === 'delete') {
+                    const uid = targetUser.id;
+                    await db.query("DELETE FROM player_cards WHERE user_id = $1", [uid]);
+                    await db.query("DELETE FROM deposits WHERE user_id = $1", [uid]);
+                    await db.query("DELETE FROM transactions WHERE user_id = $1 OR related_user_id = $1", [uid]);
+                    await db.query("UPDATE games SET winner_id = NULL WHERE winner_id = $1", [uid]);
+                    await db.query("DELETE FROM users WHERE id = $1", [uid]);
+                    bot.sendMessage(chatId, `🗑️ **${targetUser.username}** deleted permanently.`);
+                    delete chatStates[chatId];
+                }
+                await bot.answerCallbackQuery(cq.id);
+                return;
+            }
+
+            // PREMIUM SETTINGS CALLBACKS
+            if (action.startsWith('pset_')) {
+                const target = action.replace('pset_', '');
+                if (target === 'bank') {
+                    chatStates[chatId] = { step: 'awaiting_prem_bank' };
+                    bot.sendMessage(chatId, "🏦 **Enter New Premium Bank Details:**\n(Account Number, Name, etc.)", { reply_markup: { force_reply: true } });
+                } else {
+                    // Price Target: 1m, 3m, 6m, 1y
+                    chatStates[chatId] = { step: 'awaiting_prem_price', target: target };
+                    bot.sendMessage(chatId, `💰 **Enter Price for ${target} (ETB):**`, { reply_markup: { force_reply: true } });
+                }
                 await bot.answerCallbackQuery(cq.id);
                 return;
             }
@@ -1036,6 +1070,40 @@ const startBot = (database, socketIo, startGameLogic) => {
                     msg += "\n💡 *To manage/cancel, use '👤 Manage User'*";
                     bot.sendMessage(chatId, msg, { parse_mode: "Markdown" });
                 }
+            }
+            return;
+        }
+
+        if (text === "⚙️ Premium Settings") {
+            if (await isSuperAdmin(tgId)) {
+                // Fetch Settings
+                const keys = ['prem_price_1m', 'prem_price_3m', 'prem_price_6m', 'prem_price_1y', 'prem_bank_details'];
+                const res = await db.query("SELECT key, value FROM system_settings WHERE key = ANY($1)", [keys]);
+                const settings = {};
+                res.rows.forEach(r => settings[r.key] = r.value);
+
+                const p1m = settings['prem_price_1m'] || '150';
+                const p3m = settings['prem_price_3m'] || '400';
+                const p6m = settings['prem_price_6m'] || '750';
+                const p1y = settings['prem_price_1y'] || '1400';
+                const bank = settings['prem_bank_details'] || '(Default Bank)';
+
+                const msg = `⚙️ **Premium Configuration**\n\n` +
+                    `**Prices (ETB):**\n` +
+                    `• 1 Month: ${p1m}\n` +
+                    `• 3 Months: ${p3m}\n` +
+                    `• 6 Months: ${p6m}\n` +
+                    `• 1 Year: ${p1y}\n\n` +
+                    `**Bank Details:**\n${bank}`;
+
+                const kb = {
+                    inline_keyboard: [
+                        [{ text: "Edit 1 Month", callback_data: "pset_1m" }, { text: "Edit 3 Months", callback_data: "pset_3m" }],
+                        [{ text: "Edit 6 Months", callback_data: "pset_6m" }, { text: "Edit 1 Year", callback_data: "pset_1y" }],
+                        [{ text: "🏦 Edit Bank Details", callback_data: "pset_bank" }]
+                    ]
+                };
+                bot.sendMessage(chatId, msg, { parse_mode: "Markdown", reply_markup: kb });
             }
             return;
         }
@@ -1207,7 +1275,26 @@ const startBot = (database, socketIo, startGameLogic) => {
         }
 
         if (text.startsWith("🌟 Buy Premium")) {
-            bot.sendMessage(chatId, `🌟 *Premium Packages*\n👇 *Select Duration:*`, { parse_mode: "Markdown", reply_markup: premiumPackages }).catch(() => { });
+            // DYNAMIC PRICES
+            const keys = ['prem_price_1m', 'prem_price_3m', 'prem_price_6m', 'prem_price_1y'];
+            const res = await db.query("SELECT key, value FROM system_settings WHERE key = ANY($1)", [keys]);
+            const settings = {};
+            res.rows.forEach(r => settings[r.key] = r.value);
+
+            const p1m = settings['prem_price_1m'] || '150';
+            const p3m = settings['prem_price_3m'] || '400';
+            const p6m = settings['prem_price_6m'] || '750';
+            const p1y = settings['prem_price_1y'] || '1400';
+
+            const dynPackages = {
+                inline_keyboard: [
+                    [{ text: `1 Month (${p1m} ETB)`, callback_data: "pkg_1m" }],
+                    [{ text: `3 Months (${p3m} ETB)`, callback_data: "pkg_3m" }],
+                    [{ text: `6 Months (${p6m} ETB)`, callback_data: "pkg_6m" }],
+                    [{ text: `1 Year (${p1y} ETB)`, callback_data: "pkg_1y" }]
+                ]
+            };
+            bot.sendMessage(chatId, `🌟 *Premium Packages*\n👇 *Select Duration:*`, { parse_mode: "Markdown", reply_markup: dynPackages }).catch(() => { });
             return;
         }
 
@@ -2092,6 +2179,24 @@ const startBot = (database, socketIo, startGameLogic) => {
                     bot.sendMessage(chatId, `✅ **Request Sent!**\nWaiting for ${state.targetAdmin.username} to confirm receipt.`);
                     delete chatStates[chatId];
                 }
+
+                // --- PREMIUM SETTINGS STATE ---
+                else if (state.step === 'awaiting_prem_price') {
+                    const price = parseInt(text);
+                    if (isNaN(price) || price <= 0) return bot.sendMessage(chatId, "❌ Invalid Price.");
+
+                    const key = `prem_price_${state.target}`; // e.g., prem_price_1m
+                    await db.query("INSERT INTO system_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", [key, String(price)]);
+
+                    bot.sendMessage(chatId, `✅ **Price Updated!**\n${state.target} = ${price} ETB`, { reply_markup: superAdminKeyboard });
+                    delete chatStates[chatId];
+                }
+                else if (state.step === 'awaiting_prem_bank') {
+                    await db.query("INSERT INTO system_settings (key, value) VALUES ('prem_bank_details', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text]);
+                    bot.sendMessage(chatId, `✅ **Premium Bank Details Updated!**`, { reply_markup: superAdminKeyboard });
+                    delete chatStates[chatId];
+                }
+
             } catch (err) { console.error(err); delete chatStates[chatId]; bot.sendMessage(chatId, "❌ Error.").catch(() => { }); }
         }
     });
