@@ -243,9 +243,25 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
 
                 if (game.calledNumbers.size >= 75) {
                     clearInterval(game.intervalId);
-                    await db.query("UPDATE games SET status = 'finished' WHERE id = $1", [gameId]);
-                    game.io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'finished', winner: "No one / ማንም" });
-                    if (gameEndCallback) gameEndCallback(gameId, "Draw (No Winner)", dailyId);
+
+                    // REFUND LOGIC FOR NO WINNER
+                    await db.query("UPDATE games SET status = 'finished', winner_id = NULL WHERE id = $1", [gameId]);
+
+                    const gameInfoForRefund = await db.query("SELECT bet_amount, daily_id FROM games WHERE id = $1", [gameId]);
+                    const betAmount = gameInfoForRefund.rows[0]?.bet_amount || 0;
+                    const dId = gameInfoForRefund.rows[0]?.daily_id;
+
+                    const players = await db.query("SELECT user_id FROM player_cards WHERE game_id = $1", [gameId]);
+
+                    for (let p of players.rows) {
+                        await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [betAmount, p.user_id]);
+                        try {
+                            if (db.logTransaction) await db.logTransaction(p.user_id, 'game_refund', betAmount, null, gameId, `Draw Refund Game #${dId}`);
+                        } catch (e) { console.error(e); }
+                    }
+
+                    game.io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'finished', winner: "No Winner (Refunded) / ተመላሽ", pot: 0 });
+                    if (gameEndCallback) gameEndCallback(gameId, "Draw (Refunded)", dailyId);
                     setTimeout(() => { game.io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'idle' }); }, 10000);
                     activeGames.delete(gameId);
                     return;
