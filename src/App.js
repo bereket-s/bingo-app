@@ -190,6 +190,7 @@ function App() {
     const audioRef = useRef(new Audio());
     const audioQueue = useRef([]);
     const isPlaying = useRef(false);
+    const isSubmittingRef = useRef(false);
 
     const t = getT(lang);
 
@@ -460,9 +461,13 @@ function App() {
     const getSpecificCard = () => auth && gameState.status === 'pending' && customCardNum && socket.emit("requestSpecificCard", { ...auth, gameId: gameState.gameId, cardNumber: customCardNum });
 
     const confirmCard = () => {
-        if (selectedOption && auth && !isConfirming) {
+        if (selectedOption && auth && !isConfirming && !isSubmittingRef.current) {
+            isSubmittingRef.current = true;
             setIsConfirming(true);
             socket.emit("selectCard", { ...auth, gameId: gameState.gameId, cardGrid: selectedOption.grid, cardId: selectedOption.id });
+
+            // Release lock after 2 seconds just in case (though component might unmount/change state)
+            setTimeout(() => { isSubmittingRef.current = false; setIsConfirming(false); }, 2000);
         }
     };
 
@@ -603,7 +608,7 @@ function App() {
                                                     onClick={confirmCard}
                                                     disabled={isConfirming}
                                                 >
-                                                    {isConfirming ? "Processing..." : `✅ Buy Card #${selectedOption.label || selectedOption.id}`}
+                                                    {isConfirming ? "Processing..." : t('confirm')}
                                                 </button>
                                             </div>
                                         </div>

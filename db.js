@@ -74,6 +74,16 @@ async function initializeDatabase() {
                     ALTER TABLE transactions ADD COLUMN admin_id INTEGER REFERENCES users(id);
                 END IF;
 
+
+                -- 1. DELETE DUPLICATES (If any exist from the bug)
+                DELETE FROM player_cards a USING player_cards b 
+                WHERE a.id > b.id AND a.user_id = b.user_id AND a.game_id = b.game_id AND a.original_card_id = b.original_card_id;
+
+                -- 2. ADD STRICT CONSTRAINT
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_user_card_per_game') THEN
+                    ALTER TABLE player_cards ADD CONSTRAINT unique_user_card_per_game UNIQUE (user_id, game_id, original_card_id);
+                END IF;
+
                 -- CRITICAL: Force points default to 0
                 ALTER TABLE users ALTER COLUMN points SET DEFAULT 0;
             END $$;

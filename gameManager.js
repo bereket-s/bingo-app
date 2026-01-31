@@ -575,8 +575,9 @@ function initializeSocketListeners(io) {
                 if (!gameStates.has(cardId)) gameStates.set(cardId, { viewers: new Set(), takenBy: null });
 
                 lockedState = gameStates.get(cardId);
-                if (lockedState.takenBy && lockedState.takenBy !== userId) {
-                    return socket.emit('error', { message: 'Card taken! / ካርዱ ተይዟል!' });
+                // STRICT CHECK: If taken by ANYONE (including self), reject.
+                if (lockedState.takenBy) {
+                    return socket.emit('error', { message: 'Card already processing! / ካርዱ እየተሰራ ነው!' });
                 }
 
                 // LOCK NOW

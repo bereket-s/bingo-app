@@ -431,12 +431,18 @@ header {
 }
 
 .cancel-btn {
-    background: transparent;
-    border: 1px solid #666;
-    color: #ccc;
+    background: #333;
+    border: none;
+    color: #fff;
     padding: 10px 25px;
     border-radius: 20px;
     cursor: pointer;
+    font-weight: bold;
+    transition: background 0.2s;
+}
+
+.cancel-btn:hover {
+    background: #444;
 }
 
 /* --- Active Game --- */
