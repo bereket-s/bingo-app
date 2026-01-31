@@ -473,9 +473,7 @@ function App() {
 
     if (!auth) return <div className="App login-screen"><h2>{t('invalid')}</h2></div>;
 
-    const displayPrize = gameState.status === 'pending'
-        ? Math.floor(gameState.pot * 0.7)
-        : gameState.pot;
+    const displayPrize = gameState.pot;
 
     return (
         <div className="App">

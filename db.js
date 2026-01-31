@@ -82,6 +82,7 @@ async function initializeDatabase() {
         // NEW TABLES
         await client.query(`CREATE TABLE IF NOT EXISTS daily_reports (date DATE PRIMARY KEY, total_revenue INTEGER DEFAULT 0, total_payout INTEGER DEFAULT 0, net_profit INTEGER DEFAULT 0, system_share INTEGER DEFAULT 0, admin_shares JSONB DEFAULT '{}'::jsonb, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS admin_transfers (id SERIAL PRIMARY KEY, from_admin_id INTEGER REFERENCES users(id), to_admin_id INTEGER REFERENCES users(id), amount INTEGER NOT NULL, status VARCHAR(50) DEFAULT 'pending', created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
+        await client.query(`CREATE TABLE IF NOT EXISTS image_hashes (hash VARCHAR(64) PRIMARY KEY, user_id INTEGER, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
 
         await client.query('COMMIT');
         console.log('✅ Database initialized.');

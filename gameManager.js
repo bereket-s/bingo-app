@@ -365,7 +365,9 @@ async function processGameEnd(gameId, io, game) {
     }
 
     activeGames.delete(gameId);
-    setTimeout(() => { io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'idle' }); }, 10000);
+    setTimeout(() => {
+        createAutoGame(io);
+    }, 10000);
 }
 
 async function notifyUser(io, userId, points, msg, isWinner = false) {
@@ -577,7 +579,11 @@ function initializeSocketListeners(io) {
             try {
                 await db.query('BEGIN');
                 const updatedUser = await db.query("UPDATE users SET points = points - $1 WHERE id = $2 RETURNING points", [game.bet_amount, userId]);
-                const updatedGame = await db.query("UPDATE games SET pot = pot + $1 WHERE id = $2 RETURNING pot", [game.bet_amount, game.id]);
+                // Prize is ALWAYS 70%
+                // We add 70% to the pot. The remaining 30% is System/Admin Profit.
+                const potShare = Math.floor(game.bet_amount * 0.7);
+                const updatedGame = await db.query("UPDATE games SET pot = pot + $1 WHERE id = $2 RETURNING pot", [potShare, game.id]);
+
                 const cardRes = await db.query("INSERT INTO player_cards (user_id, game_id, card_data, original_card_id) VALUES ($1, $2, $3, $4) RETURNING *", [userId, gameId, JSON.stringify(cardGrid), cardId]);
                 await db.query('COMMIT');
 
@@ -604,8 +610,27 @@ function initializeSocketListeners(io) {
                 socket.emit('joinSuccess', { card: { id: cardRes.rows[0].id, displayId: cardId, card_data: cardRes.rows[0].card_data } });
                 socket.emit('playerUpdate', { points: updatedUser.rows[0].points });
                 io.to(`game_${gameId}`).emit('potUpdate', { pot: updatedGame.rows[0].pot });
+
+                // --- COUNTDOWN LOGIC (3 PLAYERS) ---
+                const pCountRes = await db.query("SELECT COUNT(DISTINCT user_id) as count FROM player_cards WHERE game_id = $1", [gameId]);
+                const pCount = parseInt(pCountRes.rows[0].count);
+                if (pCount >= 3) {
+                    // Check if already starting? We use pendingCardStates as a simple memory store for now
+                    if (!pendingCardStates.has(`starting_${gameId}`)) {
+                        pendingCardStates.set(`starting_${gameId}`, true);
+                        const delay = 300; // 5 Mins
+                        startGameLogic(gameId, io, null, delay);
+                        io.to(`game_${gameId}`).emit('gameCountdown', { seconds: delay });
+                    }
+                }
             } catch (txError) { await db.query('ROLLBACK'); socket.emit('error', { message: 'Transaction failed' }); }
         });
+
+        // --- NEW AUTO GAME LOGIC (3 Player Countdown) ---
+        socket.on('joinCheck', async (data) => {
+            // We can do this check inside selectCard itself as planned
+        });
+
 
         socket.on('claimBingo', async (data) => {
             if (!socket.userId) return socket.emit('error', { message: 'Reconnect required' });
@@ -635,4 +660,87 @@ function initializeSocketListeners(io) {
     });
 }
 
-module.exports = { initializeSocketListeners, startGameLogic, getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback };
+
+
+// --- AUTOMATIC GAME CREATION & CYCLE ---
+async function createAutoGame(io) {
+    try {
+        console.log("🤖 Checking Auto-Game Creation...");
+
+        // 1. Check if a game is already pending or active
+        const pendingCheck = await db.query("SELECT id FROM games WHERE status IN ('pending', 'active')");
+        if (pendingCheck.rows.length > 0) {
+            console.log("⚠️ Game already active/pending. Skipping auto-create.");
+            return;
+        }
+
+        // 2. Determine Cycle (Normal vs Special)
+        // Check how many games finished TODAY or TOTAL. User said "always create one game... after 20 games make 50 bet...".
+        // Let's rely on TOTAL finished games to keep the cycle consistent even across restarts?
+        // Or per day? "daily_id" suggests daily cycle. "after 20 games" usually means in the current session/day.
+        // Let's use Daily Count.
+
+        const countRes = await db.query("SELECT COUNT(*) FROM games WHERE status = 'finished' AND created_at::date = CURRENT_DATE");
+        const finishedToday = parseInt(countRes.rows[0].count);
+
+        // Logic: 
+        // Game 1..20: Normal (20 Bet, 2 Lines)
+        // Game 21: Special (50 Bet, Full House)
+        // Game 22..41: Normal
+        // Game 42: Special
+
+        // (finishedToday + 1) is the ID of the NEW game we are about to make.
+        // If (finishedToday + 1) % 21 === 0? 
+        // e.g. finished 20. Next is 21. 21 % 21 == 0. Special.
+        // e.g. finished 0. Next is 1. Normal.
+
+        const nextGameIndex = finishedToday + 1;
+        const isSpecial = (nextGameIndex % 21 === 0);
+
+        let betAmount = 20;
+        let pattern = 'two_lines';
+        let creator = 'AutoBot';
+        let isAuto = true;
+
+        if (isSpecial) {
+            betAmount = 50;
+            pattern = 'full_house';
+        }
+
+        const dailyCountRes = await db.query("SELECT COUNT(*) FROM games WHERE created_at::date = CURRENT_DATE");
+        const dailyId = parseInt(dailyCountRes.rows[0].count) + 1;
+
+        const res = await db.query('INSERT INTO games (bet_amount, status, pot, winning_pattern, daily_id, created_by, creator_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *', [betAmount, 'pending', 0, pattern, dailyId, creator, 'system']);
+        const gameId = res.rows[0].id;
+
+        console.log(`🤖 Auto-Game Created: #${dailyId} (${isSpecial ? 'SPECIAL' : 'Normal'})`);
+
+        io.emit('gameStateUpdate', { status: 'pending', gameId, displayId: dailyId, betAmount: betAmount, pot: 0, calledNumbers: [], pattern });
+
+        // If Special Game, start a timeout to ABORT if not played in 1 hour
+        if (isSpecial) {
+            setTimeout(async () => {
+                const check = await db.query("SELECT status FROM games WHERE id = $1", [gameId]);
+                if (check.rows.length && check.rows[0].status === 'pending') {
+                    // Abort it
+                    await db.query("UPDATE games SET status = 'aborted' WHERE id = $1", [gameId]);
+                    // Refund
+                    const refundPlayers = await db.query("SELECT user_id FROM player_cards WHERE game_id = $1", [gameId]);
+                    for (let p of refundPlayers.rows) {
+                        await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [betAmount, p.user_id]);
+                    }
+                    console.log(`🛑 Special Game #${dailyId} aborted (Timeout).`);
+                    io.emit('gameStateUpdate', { status: 'idle' });
+
+                    // Force start next game (which will be Normal)
+                    createAutoGame(io);
+                }
+            }, 60 * 60 * 1000); // 1 Hour
+        }
+
+        if (gameStartCallback) gameStartCallback(gameId, dailyId, "TBD", pattern);
+
+    } catch (e) { console.error("AutoGame Error:", e); }
+}
+
+module.exports = { initializeSocketListeners, startGameLogic, getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback, createAutoGame };

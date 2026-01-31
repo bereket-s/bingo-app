@@ -8,7 +8,7 @@ const bodyParser = require('body-parser');
 
 const db = require('./db');
 const { startBot } = require('./bot');
-const { initializeSocketListeners, startGameLogic } = require('./gameManager');
+const { initializeSocketListeners, startGameLogic, createAutoGame } = require('./gameManager');
 
 const app = express();
 const server = http.createServer(app);
@@ -97,6 +97,8 @@ app.get('*', (req, res) => {
 });
 
 initializeSocketListeners(io);
+createAutoGame(io); // KICK OFF AUTO LOOP
+
 if (process.env.DISABLE_BOT === 'true') {
     console.log("⚠️ Bot startup SKIPPED (DISABLE_BOT=true in .env)");
 } else {

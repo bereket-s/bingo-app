@@ -1,5 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const Tesseract = require('tesseract.js'); // REQUIRED for Image Reading
+const crypto = require('crypto'); // For Image Hashing
 const { getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback } = require('./gameManager');
 const db = require('./db');
 const dayjs = require('dayjs');
@@ -112,7 +113,7 @@ const startBot = (database, socketIo, startGameLogic) => {
             [{ text: "📋 Transactions" }, { text: "📈 Global Stats" }],
             [{ text: "📢 Broadcast Group Link" }, { text: "⚠️ Reset All Points" }],
             [{ text: "🔧 SMS & Webhook" }, { text: "📱 App Link" }],
-            [{ text: "💎 Manage Admin Balances" }]
+            [{ text: "💎 Manage Admin Balances" }, { text: "📢 Broadcast Announcement" }]
         ],
         resize_keyboard: true,
         persistent: true
@@ -137,7 +138,12 @@ const startBot = (database, socketIo, startGameLogic) => {
             [{ text: "💰 My Points / ነጥቦቼ" }, { text: "🏦 Deposit / ገቢ አድርግ" }],
             [{ text: "💸 Transfer / አስተላልፍ" }, { text: "🏧 Withdraw / ወጪ አድርግ" }],
             [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "📢 Join Group / ግሩፕ ይቀላቀሉ" }],
-            [{ text: "ℹ️ Guide / መመሪያ" }, { text: "🌟 Buy Premium / ፕሪሚየም ይግዙ" }]
+            [{ text: "🚀 Play Bingo / ጨዋታውን ጀምር" }],
+            [{ text: "💰 My Points / ነጥቦቼ" }, { text: "🏦 Deposit / ገቢ አድርግ" }],
+            [{ text: "💸 Transfer / አስተላልፍ" }, { text: "🏧 Withdraw / ወጪ አድርግ" }],
+            [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "📢 Join Group / ግሩፕ ይቀላቀሉ" }],
+            [{ text: "ℹ️ Guide / መመሪያ" }, { text: "🌟 Buy Premium / ፕሪሚየም ይግዙ" }],
+            [{ text: "❌ Cancel / አቋርጥ" }]
         ],
         resize_keyboard: true,
         persistent: true
@@ -263,6 +269,91 @@ const startBot = (database, socketIo, startGameLogic) => {
             }
         }
     };
+
+    // --- AUTOMATIC END DAY REPORT ---
+    const generateEndDayReport = async (chatId = null) => {
+        try {
+            const payoutRes = await db.query(`
+            SELECT COUNT(*) as count, COALESCE(SUM(pot), 0) as total_payouts
+            FROM games
+            WHERE status = 'finished' AND created_at::date = CURRENT_DATE
+         `);
+            const totalPayouts = parseInt(payoutRes.rows[0].total_payouts);
+
+            const revenueRes = await db.query(`
+            SELECT COALESCE(SUM(g.bet_amount), 0) as total_revenue
+            FROM games g
+            JOIN player_cards pc ON g.id = pc.game_id
+            WHERE g.status = 'finished' AND g.created_at::date = CURRENT_DATE
+         `);
+            const totalRevenue = parseInt(revenueRes.rows[0].total_revenue);
+            const netProfit = totalRevenue - totalPayouts;
+
+            // 50/50 Profit Split Logic
+            const share50 = Math.floor(netProfit * 0.50);
+
+            // Save to DB (Upsert)
+            await db.query(`
+            INSERT INTO daily_reports (date, total_revenue, total_payout, net_profit, system_share, admin_shares) 
+            VALUES (CURRENT_DATE, $1, $2, $3, $4, $5)
+            ON CONFLICT (date) DO UPDATE SET 
+                total_revenue = EXCLUDED.total_revenue,
+                total_payout = EXCLUDED.total_payout,
+                net_profit = EXCLUDED.net_profit
+         `, [totalRevenue, totalPayouts, netProfit, share50, JSON.stringify({ share2: share50 })]);
+
+            const msg = `📊 **DAILY NET PROFIT REPORT** 📊\n\n` +
+                `💰 **Total Revenue:** ${totalRevenue}\n` +
+                `💸 **Total Payouts:** ${totalPayouts}\n` +
+                `-----------------------------\n` +
+                `📈 **NET PROFIT:** ${netProfit}\n\n` +
+                `**Profit Distribution:**\n` +
+                `🔹 Share 1 (50%): ${share50}\n` +
+                `🔹 Share 2 (50%): ${share50}\n\n` +
+                `✅ *Saved to Database.*`;
+
+            const opts = {
+                parse_mode: "Markdown",
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "🛑 CLOSE DAY (Broadcasted)", callback_data: "end_day_broadcast" }]
+                    ]
+                }
+            };
+
+            if (chatId) {
+                // Manual Trigger
+                bot.sendMessage(chatId, msg, opts);
+            } else {
+                // Auto Trigger - Broadcast to ALL Admins
+                broadcastToAdmins(msg, opts);
+            }
+
+        } catch (e) {
+            console.error("End Day Report Error:", e);
+            if (chatId) bot.sendMessage(chatId, "❌ Error generating report.");
+        }
+    };
+
+    // Scheduled Task: Check time every minute
+    setInterval(() => {
+        const now = dayjs();
+        // 11:59 PM (23:59)
+        if (now.hour() === 23 && now.minute() === 59) {
+            console.log("⏰ Converting Daily Report...");
+            // Check if already generated for today? 
+            // Ideally we just generate it. 
+            // To prevent multiple triggers in the same minute, we could use a simple flag or check seconds, 
+            // but `setInterval` might drift. 
+            // Simple fix: Store 'lastReportDate' in memory.
+            if (global.lastReportDate !== now.format('YYYY-MM-DD')) {
+                generateEndDayReport(null);
+                global.lastReportDate = now.format('YYYY-MM-DD');
+            }
+        }
+    }, 60 * 1000);
+
+
 
     setGameStartCallback(async (gameId, dailyId, prize, pattern) => {
         const inviteLink = `https://t.me/${botUsername}?start=bingo`;
@@ -407,6 +498,32 @@ const startBot = (database, socketIo, startGameLogic) => {
                 const scanMsg = await bot.sendMessage(chatId, "🔍 **Scanning receipt... Please wait.**", { parse_mode: "Markdown" });
                 try {
                     const fileLink = await bot.getFileLink(fileId);
+
+                    // --- DUPLICATE IMAGE CHECK ---
+                    // Download to buffer for hashing
+                    const https = require('https');
+                    const buffer = await new Promise((resolve, reject) => {
+                        https.get(fileLink, (res) => {
+                            const data = [];
+                            res.on('data', (chunk) => data.push(chunk));
+                            res.on('end', () => resolve(Buffer.concat(data)));
+                            res.on('error', (err) => reject(err));
+                        });
+                    });
+
+                    const fileHash = crypto.createHash('sha256').update(buffer).digest('hex');
+                    const hashCheck = await db.query("SELECT * FROM image_hashes WHERE hash = $1", [fileHash]);
+
+                    if (hashCheck.rows.length > 0) {
+                        await bot.deleteMessage(chatId, scanMsg.message_id).catch(() => { });
+                        bot.sendMessage(chatId, `⚠️ **Duplicate Receipt Image Detected!** / ይህ ፎቶ ከዚህ በፊት ተልኳል።\n\nPlease send a new screenshot.`, { reply_markup: userKeyboard });
+                        delete chatStates[chatId];
+                        return;
+                    }
+
+                    // Save Hash immediately
+                    await db.query("INSERT INTO image_hashes (hash, user_id) VALUES ($1, $2)", [fileHash, user.id]);
+
                     const { data: { text } } = await Tesseract.recognize(fileLink, 'eng');
 
                     const cleanOCR = text.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
@@ -1247,9 +1364,24 @@ const startBot = (database, socketIo, startGameLogic) => {
             return;
         }
 
-        const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ Guide", "🗑️ Delete User", "🔧 SMS & Webhook", "📱 App Link", "📢 Announce Game Day", "👤 Manage User", "👥 View Admins", "🕹 Active Games", "💰 End Day Report", "🌟 Premium Players"];
-        if (mainMenuButtons.some(btn => text.startsWith(btn))) {
+        if (text === "❌ Cancel" || text === "❌ Cancel / አቋርጥ") {
             if (chatStates[chatId]) delete chatStates[chatId];
+
+            const isAdminUser = await isAdmin(msg.from.id);
+            const isSuper = await isSuperAdmin(msg.from.id);
+            let kb = userKeyboard;
+            if (isSuper) kb = superAdminKeyboard;
+            else if (isAdminUser) kb = adminKeyboard;
+
+            return bot.sendMessage(chatId, "❌ **Action Cancelled.**\n\n👇 Select an option:", { parse_mode: "Markdown", reply_markup: kb });
+        }
+
+        const mainMenuButtons = ["🚀 Play", "💰 My Points", "🌟 Buy Premium", "🏦 Deposit", "💸 Transfer", "🏧 Withdraw", "🆘 Help", "🔄 Reset", "✏️ Edit Name", "ℹ️ Guide", "🗑️ Delete User", "🔧 SMS & Webhook", "📱 App Link", "📢 Announce Game Day", "👤 Manage User", "👥 View Admins", "🕹 Active Games", "💰 End Day Report", "🌟 Premium Players", "❌ Cancel"];
+        if (mainMenuButtons.some(btn => text.startsWith(btn))) {
+            if (chatStates[chatId]) {
+                // Implicit Cancel: User clicked a menu button while in a state
+                delete chatStates[chatId];
+            }
         }
 
         const user = await getUser(msg.from.id);
@@ -1367,9 +1499,20 @@ const startBot = (database, socketIo, startGameLogic) => {
 
         if (userIsAdmin) {
             if (text.startsWith("🆕 New Game")) {
-                const pendingGames = await db.query("SELECT id FROM games WHERE status = 'pending'");
+                const pendingGames = await db.query("SELECT id, bet_amount, creator_id FROM games WHERE status = 'pending'");
                 if (pendingGames.rows.length > 0) {
-                    return bot.sendMessage(chatId, `⚠️ **Game #${pendingGames.rows[0].id} is already pending!**\n\nYou must START or ABORT it before creating a new one.`, { parse_mode: "Markdown" });
+                    const g = pendingGames.rows[0];
+                    // Check if it's a System Auto-Game
+                    if (g.creator_id === 'system') {
+                        await db.query("UPDATE games SET status = 'aborted' WHERE id = $1", [g.id]);
+                        const players = await db.query("SELECT user_id FROM player_cards WHERE game_id = $1", [g.id]);
+                        for (let p of players.rows) {
+                            await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [g.bet_amount, p.user_id]);
+                        }
+                        bot.sendMessage(chatId, `🛑 **Auto-Game #${g.id} Aborted & Refunded** to allow Admin Game.`);
+                    } else {
+                        return bot.sendMessage(chatId, `⚠️ **Game #${g.id} is already pending!**\n\nYou must START or ABORT it before creating a new one.`, { parse_mode: "Markdown" });
+                    }
                 }
 
                 chatStates[chatId] = { step: 'awaiting_pattern' };
@@ -1481,61 +1624,16 @@ const startBot = (database, socketIo, startGameLogic) => {
             }
 
             // --- NEW FEATURE: END DAY REPORT ---
+            // --- END DAY REPORT ---
             if (text === "💰 End Day Report") {
-                try {
-                    const payoutRes = await db.query(`
-                    SELECT COUNT(*) as count, COALESCE(SUM(pot), 0) as total_payouts
-                    FROM games
-                    WHERE status = 'finished' AND created_at::date = CURRENT_DATE
-                 `);
-                    const totalPayouts = parseInt(payoutRes.rows[0].total_payouts);
-
-                    const revenueRes = await db.query(`
-                    SELECT COALESCE(SUM(g.bet_amount), 0) as total_revenue
-                    FROM games g
-                    JOIN player_cards pc ON g.id = pc.game_id
-                    WHERE g.status = 'finished' AND g.created_at::date = CURRENT_DATE
-                 `);
-                    const totalRevenue = parseInt(revenueRes.rows[0].total_revenue);
-                    const netProfit = totalRevenue - totalPayouts;
-
-                    // 40% - 30% - 30% Logic
-                    const share40 = Math.floor(netProfit * 0.40);
-                    const share30 = Math.floor(netProfit * 0.30);
-
-                    // Save to DB (Upsert)
-                    await db.query(`
-                    INSERT INTO daily_reports (date, total_revenue, total_payout, net_profit, system_share, admin_shares) 
-                    VALUES (CURRENT_DATE, $1, $2, $3, $4, $5)
-                    ON CONFLICT (date) DO UPDATE SET 
-                        total_revenue = EXCLUDED.total_revenue,
-                        total_payout = EXCLUDED.total_payout,
-                        net_profit = EXCLUDED.net_profit
-                 `, [totalRevenue, totalPayouts, netProfit, share40, JSON.stringify({ admin1: share30, admin2: share30 })]);
-
-                    const msg = `📊 **DAILY NET PROFIT REPORT** 📊\n\n` +
-                        `💰 **Total Revenue:** ${totalRevenue}\n` +
-                        `💸 **Total Payouts:** ${totalPayouts}\n` +
-                        `-----------------------------\n` +
-                        `📈 **NET PROFIT:** ${netProfit}\n\n` +
-                        `**Profit Distribution:**\n` +
-                        `🔹 System (40%): ${share40}\n` +
-                        `🔹 Admin 1 (30%): ${share30}\n` +
-                        `🔹 Admin 2 (30%): ${share30}\n\n` +
-                        `✅ *Saved to Database.*`;
-
-                    const opts = {
-                        parse_mode: "Markdown",
-                        reply_markup: {
-                            inline_keyboard: [
-                                [{ text: "🛑 ANNOUNCE END OF DAY & CLOSE", callback_data: "end_day_broadcast" }]
-                            ]
-                        }
-                    };
-
-                    bot.sendMessage(chatId, msg, opts);
-                } catch (e) { console.error(e); }
+                await generateEndDayReport(chatId);
                 return;
+            }
+
+            // --- BROADCAST ANNOUNCEMENT ---
+            if (text === "📢 Broadcast Announcement") {
+                chatStates[chatId] = { step: 'awaiting_announcement' };
+                return bot.sendMessage(chatId, "📢 **Broadcast Announcement**\n\nEnter the message you want to send to ALL users:", { parse_mode: "Markdown", reply_markup: { force_reply: true } });
             }
 
             if (text.startsWith("🏦 Set Bank")) {
@@ -2194,6 +2292,14 @@ const startBot = (database, socketIo, startGameLogic) => {
                 else if (state.step === 'awaiting_prem_bank') {
                     await db.query("INSERT INTO system_settings (key, value) VALUES ('prem_bank_details', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [text]);
                     bot.sendMessage(chatId, `✅ **Premium Bank Details Updated!**`, { reply_markup: superAdminKeyboard });
+                    delete chatStates[chatId];
+                }
+
+                // --- BROADCAST STATE ---
+                else if (state.step === 'awaiting_announcement') {
+                    const announcement = text;
+                    const count = await broadcastToAllUsers(`📢 **ANNOUNCEMENT / ማስታወቂያ** 📢\n\n${announcement}`);
+                    bot.sendMessage(chatId, `✅ **Sent to ${count} users.**`, { reply_markup: adminKeyboard });
                     delete chatStates[chatId];
                 }
 
