@@ -191,6 +191,7 @@ function App() {
     const audioQueue = useRef([]);
     const isPlaying = useRef(false);
     const isSubmittingRef = useRef(false);
+    const lastGameId = useRef(null);
 
     const t = getT(lang);
 
@@ -395,6 +396,22 @@ function App() {
         socket.on("cardStatesUpdate", (updates) => setCardStates(prev => ({ ...prev, ...updates })));
 
         socket.on("gameStateUpdate", (data) => {
+            // DETECT NEW GAME
+            if (data.gameId && data.gameId !== lastGameId.current) {
+                lastGameId.current = data.gameId;
+                // Reset UI for new game
+                setCardOptions([]);
+                setSelectedOption(null);
+                setCardStates({});
+                setIsConfirming(false);
+                setCheckingCardId(null);
+                // Only clear cards if server didn't send new ones (e.g. reconnect)
+                if (!data.myCards) {
+                    setMyCards([]);
+                    setMarkedCells({});
+                }
+            }
+
             setGameState(prev => ({ ...prev, ...data }));
 
             if (data.status === 'finished' && data.winner && !gameState.winner) {

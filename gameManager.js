@@ -207,6 +207,10 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
 
     setTimeout(async () => {
         try {
+            // RE-FETCH POT: Pot might have increased during the delay!
+            const latestGameInfo = await db.query("SELECT pot FROM games WHERE id = $1", [gameId]);
+            const currentPot = latestGameInfo.rows[0]?.pot || finalPrize;
+
             await db.query("UPDATE games SET status = 'active' WHERE id = $1", [gameId]);
             pendingCardStates.delete(gameId);
 
@@ -225,9 +229,9 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
             const game = { calledNumbers: new Set(), lastCalledNumber: null, io: io, intervalId: null, pattern, winners: new Set(), isEnding: false, cards: gameCards, dailyId, hasProcessedEnd: false };
             activeGames.set(gameId, game);
 
-            if (gameStartCallback) gameStartCallback(gameId, dailyId, finalPrize, pattern);
+            if (gameStartCallback) gameStartCallback(gameId, dailyId, currentPot, pattern);
 
-            io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'active', gameId, displayId: dailyId, pattern, pot: finalPrize });
+            io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'active', gameId, displayId: dailyId, pattern, pot: currentPot });
             console.log(`🚀 Game ${gameId} Started. Rule: ${pattern}`);
 
             game.intervalId = setInterval(async () => {
