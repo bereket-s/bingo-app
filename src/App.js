@@ -603,7 +603,7 @@ function App() {
                                                     onClick={confirmCard}
                                                     disabled={isConfirming}
                                                 >
-                                                    {isConfirming ? "..." : t('confirm')}
+                                                    {isConfirming ? "Processing..." : `✅ Buy Card #${selectedOption.label || selectedOption.id}`}
                                                 </button>
                                             </div>
                                         </div>

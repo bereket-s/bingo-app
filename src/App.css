@@ -23,33 +23,37 @@ body {
 }
 
 /* --- Countdown Overlay --- */
+/* --- Countdown Overlay (Top Banner) --- */
 .countdown-overlay {
     position: fixed;
     top: 0;
     left: 0;
     width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.85);
-    z-index: 999;
+    height: 70px;
+    background: linear-gradient(90deg, #b20a2c, #e94560);
+    z-index: 2000;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
     justify-content: center;
+    gap: 20px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
 }
 
 .cnt-num {
-    font-size: 8em;
+    font-size: 2.5em;
     font-weight: bold;
-    color: #e94560;
-    text-shadow: 0 0 20px #ff0000;
-    animation: pulse 0.5s infinite;
+    color: #fff;
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+    animation: pulse 1s infinite;
 }
 
 .cnt-txt {
-    font-size: 2em;
+    font-size: 1.2em;
     color: white;
     text-transform: uppercase;
-    letter-spacing: 5px;
+    letter-spacing: 2px;
+    font-weight: bold;
 }
 
 header {

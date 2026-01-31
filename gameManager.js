@@ -567,9 +567,22 @@ function initializeSocketListeners(io) {
             const gameRes = await db.query("SELECT * FROM games WHERE id = $1 AND status = 'pending'", [gameId]);
             if (gameRes.rows.length === 0) return socket.emit('error', { message: 'Game closed. / ጨዋታው ተዘግቷል።' });
             const game = gameRes.rows[0];
-            if (cardId && pendingCardStates.has(gameId)) {
-                const state = pendingCardStates.get(gameId).get(cardId);
-                if (state && state.takenBy && state.takenBy !== userId) return socket.emit('error', { message: 'Card taken! / ካርዱ ተይዟል!' });
+            // OPTIMISTIC LOCKING: Lock in memory BEFORE DB transaction
+            let lockedState = null;
+            if (cardId) {
+                if (!pendingCardStates.has(gameId)) pendingCardStates.set(gameId, new Map());
+                const gameStates = pendingCardStates.get(gameId);
+                if (!gameStates.has(cardId)) gameStates.set(cardId, { viewers: new Set(), takenBy: null });
+
+                lockedState = gameStates.get(cardId);
+                if (lockedState.takenBy && lockedState.takenBy !== userId) {
+                    return socket.emit('error', { message: 'Card taken! / ካርዱ ተይዟል!' });
+                }
+
+                // LOCK NOW
+                lockedState.takenBy = userId;
+                // Broadcast "Taken" status immediately to prevent others from clicking
+                io.to(`game_${gameId}`).emit('cardStatesUpdate', { [cardId]: { viewers: Array.from(lockedState.viewers), takenBy: userId } });
             }
 
             const userRes = await db.query("SELECT points FROM users WHERE id = $1", [userId]);
@@ -599,13 +612,11 @@ function initializeSocketListeners(io) {
                     }));
                 }
 
-                if (cardId) {
-                    if (!pendingCardStates.has(gameId)) pendingCardStates.set(gameId, new Map());
-                    const gameStates = pendingCardStates.get(gameId);
-                    if (!gameStates.has(cardId)) gameStates.set(cardId, { viewers: new Set(), takenBy: null });
-                    const state = gameStates.get(cardId);
-                    state.takenBy = userId; state.viewers.delete(userId);
-                    io.to(`game_${gameId}`).emit('cardStatesUpdate', { [cardId]: { viewers: Array.from(state.viewers), takenBy: userId } });
+                // (Memory Lock already verified/set above)
+                if (cardId && lockedState) {
+                    lockedState.viewers.delete(userId);
+                    // Update viewers list (takenBy is already set)
+                    io.to(`game_${gameId}`).emit('cardStatesUpdate', { [cardId]: { viewers: Array.from(lockedState.viewers), takenBy: userId } });
                 }
                 socket.emit('joinSuccess', { card: { id: cardRes.rows[0].id, displayId: cardId, card_data: cardRes.rows[0].card_data } });
                 socket.emit('playerUpdate', { points: updatedUser.rows[0].points });
@@ -623,7 +634,17 @@ function initializeSocketListeners(io) {
                         io.to(`game_${gameId}`).emit('gameCountdown', { seconds: delay });
                     }
                 }
-            } catch (txError) { await db.query('ROLLBACK'); socket.emit('error', { message: 'Transaction failed' }); }
+            } catch (txError) {
+                await db.query('ROLLBACK');
+                console.error("Bet Tx Error", txError);
+
+                // UNLOCK if transaction failed
+                if (lockedState && lockedState.takenBy === userId) {
+                    lockedState.takenBy = null;
+                    io.to(`game_${gameId}`).emit('cardStatesUpdate', { [cardId]: { viewers: Array.from(lockedState.viewers), takenBy: null } });
+                }
+                socket.emit('error', { message: 'Transaction failed / ግዢው አልተሳካም' });
+            }
         });
 
         // --- NEW AUTO GAME LOGIC (3 Player Countdown) ---
