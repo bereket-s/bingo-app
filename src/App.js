@@ -360,6 +360,13 @@ function App() {
         const token = urlParams.get('token');
         if (userId && token) { setAuth({ userId: parseInt(userId, 10), token }); }
         else if (window.location.search.includes('user_id')) { setErrorMsg(t('invalid')); }
+
+        // Initial Connection Check
+        if (socket.connected) {
+            socket.emit('joinCheck');
+        } else {
+            socket.on('connect', () => socket.emit('joinCheck'));
+        }
     }, []);
 
     useEffect(() => {

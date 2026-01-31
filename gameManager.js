@@ -627,8 +627,28 @@ function initializeSocketListeners(io) {
         });
 
         // --- NEW AUTO GAME LOGIC (3 Player Countdown) ---
-        socket.on('joinCheck', async (data) => {
-            // We can do this check inside selectCard itself as planned
+        socket.on('joinCheck', async () => {
+            // Fetch current pending or active game
+            try {
+                const res = await db.query("SELECT * FROM games WHERE status IN ('pending', 'active') LIMIT 1");
+                if (res.rows.length > 0) {
+                    const g = res.rows[0];
+                    const activeG = activeGames.get(g.id);
+
+                    socket.emit('gameStateUpdate', {
+                        status: g.status,
+                        gameId: g.id,
+                        displayId: g.daily_id,
+                        betAmount: g.bet_amount,
+                        pot: g.pot,
+                        pattern: g.winning_pattern,
+                        calledNumbers: activeG ? activeG.calledNumbers : [],
+                        startTime: activeG ? activeG.startTime : null
+                    });
+                } else {
+                    socket.emit('gameStateUpdate', { status: 'idle' });
+                }
+            } catch (e) { console.error("JoinCheck error", e); }
         });
 
 
