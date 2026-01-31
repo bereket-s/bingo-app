@@ -138,10 +138,6 @@ const startBot = (database, socketIo, startGameLogic) => {
             [{ text: "💰 My Points / ነጥቦቼ" }, { text: "🏦 Deposit / ገቢ አድርግ" }],
             [{ text: "💸 Transfer / አስተላልፍ" }, { text: "🏧 Withdraw / ወጪ አድርግ" }],
             [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "📢 Join Group / ግሩፕ ይቀላቀሉ" }],
-            [{ text: "🚀 Play Bingo / ጨዋታውን ጀምር" }],
-            [{ text: "💰 My Points / ነጥቦቼ" }, { text: "🏦 Deposit / ገቢ አድርግ" }],
-            [{ text: "💸 Transfer / አስተላልፍ" }, { text: "🏧 Withdraw / ወጪ አድርግ" }],
-            [{ text: "✏️ Edit Name / ስም ቀይር" }, { text: "📢 Join Group / ግሩፕ ይቀላቀሉ" }],
             [{ text: "ℹ️ Guide / መመሪያ" }, { text: "🌟 Buy Premium / ፕሪሚየም ይግዙ" }],
             [{ text: "❌ Cancel / አቋርጥ" }]
         ],

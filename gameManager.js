@@ -662,6 +662,43 @@ function initializeSocketListeners(io) {
 
 
 
+// --- CLEANUP STALE GAMES (On Server Restart) ---
+async function cleanupStaleGames(io) {
+    try {
+        console.log("🧹 Checking for Stale/Ghost Games...");
+        // Find games that are 'active' or 'pending' but server just restarted (so they are dead in memory)
+        // We accept that a restart kills the current game.
+
+        const staleGames = await db.query("SELECT id, status, bet_amount, daily_id FROM games WHERE status IN ('active', 'pending')");
+
+        if (staleGames.rows.length === 0) {
+            console.log("✅ No stale games found.");
+            return;
+        }
+
+        for (const game of staleGames.rows) {
+            console.log(`⚠️ Cleaning up Stale Game #${game.daily_id} (ID: ${game.id}, Status: ${game.status})`);
+
+            // 1. Mark Aborted
+            await db.query("UPDATE games SET status = 'aborted' WHERE id = $1", [game.id]);
+
+            // 2. Refund Players
+            const players = await db.query("SELECT user_id FROM player_cards WHERE game_id = $1", [game.id]);
+            for (const p of players.rows) {
+                await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [game.bet_amount, p.user_id]);
+                await db.logTransaction(p.user_id, 'refund', game.bet_amount, null, game.id, `Refund for Stale Game #${game.daily_id}`);
+            }
+            console.log(`💰 Refunded ${players.rows.length} players.`);
+        }
+
+        // Notify clients to clear board
+        io.emit('gameStateUpdate', { status: 'idle' });
+
+    } catch (e) {
+        console.error("Cleanup Error:", e);
+    }
+}
+
 // --- AUTOMATIC GAME CREATION & CYCLE ---
 async function createAutoGame(io) {
     try {
@@ -743,4 +780,4 @@ async function createAutoGame(io) {
     } catch (e) { console.error("AutoGame Error:", e); }
 }
 
-module.exports = { initializeSocketListeners, startGameLogic, getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback, createAutoGame };
+module.exports = { initializeSocketListeners, startGameLogic, getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback, createAutoGame, cleanupStaleGames };
