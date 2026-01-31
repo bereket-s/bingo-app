@@ -1066,16 +1066,6 @@ const startBot = (database, socketIo, startGameLogic) => {
                     bot.sendMessage(chatId, `🗑️ **${targetUser.username}** deleted permanently.`);
                     delete chatStates[chatId];
                 }
-                if (act === 'delete') {
-                    const uid = targetUser.id;
-                    await db.query("DELETE FROM player_cards WHERE user_id = $1", [uid]);
-                    await db.query("DELETE FROM deposits WHERE user_id = $1", [uid]);
-                    await db.query("DELETE FROM transactions WHERE user_id = $1 OR related_user_id = $1", [uid]);
-                    await db.query("UPDATE games SET winner_id = NULL WHERE winner_id = $1", [uid]);
-                    await db.query("DELETE FROM users WHERE id = $1", [uid]);
-                    bot.sendMessage(chatId, `🗑️ **${targetUser.username}** deleted permanently.`);
-                    delete chatStates[chatId];
-                }
                 await bot.answerCallbackQuery(cq.id);
                 return;
             }
@@ -1430,27 +1420,27 @@ const startBot = (database, socketIo, startGameLogic) => {
             if (!user) return;
             const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
             chatStates[chatId] = { step: 'awaiting_deposit_amount' };
-            bot.sendMessage(chatId, `🏦 *Bank Info*\n${bankRes.rows[0]?.value || 'Contact Admin'}\n\n👇 *Enter Amount:*`, { parse_mode: "Markdown", reply_markup: { force_reply: true } });
+            bot.sendMessage(chatId, `🏦 *Bank Info*\n${bankRes.rows[0]?.value || 'Contact Admin'}\n\n👇 *Enter Amount:*`, { parse_mode: "Markdown", reply_markup: { keyboard: [[{ text: "❌ Cancel" }]], resize_keyboard: true, one_time_keyboard: true } });
             return;
         }
 
         if (text.startsWith("💸 Transfer")) {
             chatStates[chatId] = { step: 'awaiting_transfer_username' };
-            bot.sendMessage(chatId, "💸 **Transfer**\nEnter receiver username:", { reply_markup: { force_reply: true } }).catch(() => { });
+            bot.sendMessage(chatId, "💸 **Transfer**\nEnter receiver username:", { reply_markup: { keyboard: [[{ text: "❌ Cancel" }]], resize_keyboard: true, one_time_keyboard: true } }).catch(() => { });
             return;
         }
 
         if (text.startsWith("🏧 Withdraw")) {
             if (!user) return;
             chatStates[chatId] = { step: 'awaiting_withdraw_amount', user: user };
-            bot.sendMessage(chatId, `🏧 *Withdraw*\nBalance: ${user.points}\nMin Withdrawal: 50\n\nEnter amount:`, { parse_mode: "Markdown", reply_markup: { force_reply: true } }).catch(() => { });
+            bot.sendMessage(chatId, `🏧 *Withdraw*\nBalance: ${user.points}\nMin Withdrawal: 50\n\nEnter amount:`, { parse_mode: "Markdown", reply_markup: { keyboard: [[{ text: "❌ Cancel" }]], resize_keyboard: true, one_time_keyboard: true } }).catch(() => { });
             return;
         }
 
         if (text.startsWith("✏️ Edit Name")) {
             if (!user) return;
             chatStates[chatId] = { step: 'awaiting_new_username' };
-            bot.sendMessage(chatId, "✏️ **Change Username**\n\nEnter your new username:", { parse_mode: "Markdown", reply_markup: { force_reply: true } });
+            bot.sendMessage(chatId, "✏️ **Change Username**\n\nEnter your new username:", { parse_mode: "Markdown", reply_markup: { keyboard: [[{ text: "❌ Cancel" }]], resize_keyboard: true, one_time_keyboard: true } });
             return;
         }
 
@@ -1840,15 +1830,22 @@ const startBot = (database, socketIo, startGameLogic) => {
                 }
                 else if (state.step === 'awaiting_bank_details') {
                     const amount = state.withdrawAmount;
-                    const user = await getUser(tgId);
+                    // RE-FETCH USER: Balance might have changed since initial check
+                    const freshUser = await getUser(tgId);
+
+                    // RE-VERIFY: Protect against race condition
+                    if (freshUser.points < amount) {
+                        delete chatStates[chatId];
+                        return bot.sendMessage(chatId, "❌ Insufficient funds (balance changed). Please try again.", { reply_markup: userKeyboard }).catch(() => { });
+                    }
 
                     // 1. Subtract points
-                    await db.query("UPDATE users SET points = points - $1 WHERE id = $2", [amount, user.id]);
+                    await db.query("UPDATE users SET points = points - $1 WHERE id = $2", [amount, freshUser.id]);
 
                     // 2. Create the Request Record
                     const wdRes = await db.query(
                         "INSERT INTO withdrawal_requests (user_id, telegram_id, amount, bank_details, status) VALUES ($1, $2, $3, $4, 'pending') RETURNING id",
-                        [user.id, tgId, amount, text]
+                        [freshUser.id, tgId, amount, text]
                     );
                     const wdId = wdRes.rows[0].id;
 

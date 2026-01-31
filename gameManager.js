@@ -597,6 +597,18 @@ function initializeSocketListeners(io) {
             try {
                 await db.query('BEGIN');
                 const updatedUser = await db.query("UPDATE users SET points = points - $1 WHERE id = $2 RETURNING points", [game.bet_amount, userId]);
+
+                // CRITICAL: Verify balance didn't go negative (race condition protection)
+                if (updatedUser.rows[0].points < 0) {
+                    await db.query('ROLLBACK');
+                    // UNLOCK
+                    if (lockedState && lockedState.takenBy === userId) {
+                        lockedState.takenBy = null;
+                        io.to(`game_${gameId}`).emit('cardStatesUpdate', { [cardId]: { viewers: Array.from(lockedState.viewers), takenBy: null } });
+                    }
+                    return socket.emit('error', { message: 'Insufficient points. / ነጥብ በቂ አይደለም።' });
+                }
+
                 // Prize is ALWAYS 70%
                 // We add 70% to the pot. The remaining 30% is System/Admin Profit.
                 const potShare = Math.floor(game.bet_amount * 0.7);
