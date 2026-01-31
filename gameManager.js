@@ -767,7 +767,7 @@ async function createAutoGame(io) {
         const dailyCountRes = await db.query("SELECT COUNT(*) FROM games WHERE created_at::date = CURRENT_DATE");
         const dailyId = parseInt(dailyCountRes.rows[0].count) + 1;
 
-        const res = await db.query('INSERT INTO games (bet_amount, status, pot, winning_pattern, daily_id, created_by, creator_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *', [betAmount, 'pending', 0, pattern, dailyId, creator, 'system']);
+        const res = await db.query('INSERT INTO games (bet_amount, status, pot, winning_pattern, daily_id, created_by, creator_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *', [betAmount, 'pending', 0, pattern, dailyId, creator, null]);
         const gameId = res.rows[0].id;
 
         console.log(`🤖 Auto-Game Created: #${dailyId} (${isSpecial ? 'SPECIAL' : 'Normal'})`);
