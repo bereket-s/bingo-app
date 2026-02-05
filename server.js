@@ -104,8 +104,7 @@ app.get('*', (req, res) => {
     }
 });
 
-initializeSocketListeners(io);
-createAutoGame(io); // KICK OFF AUTO LOOP
+
 
 if (process.env.DISABLE_BOT === 'true') {
     console.log("⚠️ Bot startup SKIPPED (DISABLE_BOT=true in .env)");
