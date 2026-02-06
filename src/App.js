@@ -498,7 +498,33 @@ function App() {
             return newMarked;
         });
     };
-    const claimBingo = (cardId) => { if (!cardId || gameState.status !== 'active' || !auth) return; setCheckingCardId(cardId); socket.emit("claimBingo", { ...auth, gameId: gameState.gameId, cardId, markedCells: Array.from(markedCells[cardId] || new Set()) }); };
+    const claimBingo = (cardId) => {
+        if (!cardId || gameState.status !== 'active' || !auth) return;
+
+        // Find the card data
+        const card = myCards.find(c => c.id === cardId);
+        if (!card) return;
+
+        // Get current marked cells
+        let finalMarkedCells = new Set(markedCells[cardId] || ['FREE']);
+
+        // CRITICAL: Ensure all called numbers on this card are marked
+        // This fixes race condition with auto-daub
+        gameState.calledNumbers.forEach(calledNum => {
+            const calledStr = String(calledNum);
+            card.card_data.forEach(row => {
+                row.forEach(cell => {
+                    if (String(cell) === calledStr) {
+                        finalMarkedCells.add(calledStr);
+                    }
+                });
+            });
+        });
+
+        setCheckingCardId(cardId);
+        socket.emit("claimBingo", { ...auth, gameId: gameState.gameId, cardId, markedCells: Array.from(finalMarkedCells) });
+    };
+
 
     if (!auth) return <div className="App login-screen"><h2>{t('invalid')}</h2></div>;
 

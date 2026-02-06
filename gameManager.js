@@ -88,6 +88,7 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
         return { valid: false, message: "Must bingo on the LAST called number!" };
     }
 
+
     const isMarked = (r, c) => {
         const val = cardData[r][c];
         return String(val) === 'FREE' || markedCells.has(String(val));
@@ -268,6 +269,8 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
                     if (gameEndCallback) gameEndCallback(gameId, "Draw (Refunded)", dailyId);
                     setTimeout(() => { game.io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'idle' }); }, 10000);
                     activeGames.delete(gameId);
+                    // Create next auto-game after draw
+                    setTimeout(() => { createAutoGame(io); }, 10000);
                     return;
                 }
 
@@ -340,6 +343,8 @@ async function processGameEnd(gameId, io, game) {
                 if (gameEndCallback) gameEndCallback(gameId, "Refunded (>3 Winners)", game.dailyId);
                 activeGames.delete(gameId);
                 setTimeout(() => { io.to(`game_${gameId}`).emit('gameStateUpdate', { status: 'idle' }); }, 10000);
+                // Create next auto-game after too many winners
+                setTimeout(() => { createAutoGame(io); }, 10000);
                 return;
             }
 
