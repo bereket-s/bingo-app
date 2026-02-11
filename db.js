@@ -33,6 +33,9 @@ async function initializeDatabase() {
         await client.query(`CREATE TABLE IF NOT EXISTS transactions (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), type VARCHAR(50) NOT NULL, amount INTEGER NOT NULL, related_user_id INTEGER, game_id INTEGER, description TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS system_settings (key VARCHAR(50) PRIMARY KEY, value TEXT);`);
 
+        // Default Settings
+        await client.query("INSERT INTO system_settings (key, value) VALUES ('house_bots_enabled', 'false') ON CONFLICT (key) DO NOTHING");
+
         // Migrations
         await client.query(`
             DO $$ BEGIN
@@ -54,8 +57,14 @@ async function initializeDatabase() {
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'last_bot_msg_id') THEN
                     ALTER TABLE users ADD COLUMN last_bot_msg_id INTEGER;
                 END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'withdrawal_requests' AND column_name = 'rejection_reason') THEN
+                    ALTER TABLE withdrawal_requests ADD COLUMN rejection_reason TEXT;
+                END IF;
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'games' AND column_name = 'winning_pattern') THEN
                     ALTER TABLE games ADD COLUMN winning_pattern VARCHAR(50) DEFAULT 'any_line';
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'games' AND column_name = 'start_time') THEN
+                    ALTER TABLE games ADD COLUMN start_time BIGINT;
                 END IF;
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deposits' AND column_name = 'admin_msg_ids') THEN
                     ALTER TABLE deposits ADD COLUMN admin_msg_ids JSONB;
@@ -72,6 +81,11 @@ async function initializeDatabase() {
                 -- FIX: Add admin_id to transactions
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'admin_id') THEN
                     ALTER TABLE transactions ADD COLUMN admin_id INTEGER REFERENCES users(id);
+                END IF;
+
+                -- HOUSE BOTS
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'is_house_bot') THEN
+                    ALTER TABLE users ADD COLUMN is_house_bot BOOLEAN DEFAULT FALSE;
                 END IF;
 
 

@@ -168,10 +168,10 @@ function App() {
     const langRef = useRef(lang);
 
     const [auth, setAuth] = useState(null);
-    const [player, setPlayer] = useState({ username: "Loading...", points: 0, isPremium: false });
+    const [player, setPlayer] = useState(null);
     const [prefs, setPrefs] = useState({ autoDaub: true, autoBingo: true });
 
-    const [gameState, setGameState] = useState({ status: "idle", gameId: null, displayId: null, betAmount: 0, calledNumbers: [], winner: null, pot: 0, pattern: "any_line" });
+    const [gameState, setGameState] = useState({ status: "idle", gameId: null, displayId: null, betAmount: 0, calledNumbers: [], winner: null, pot: 0, pattern: "any_line", startTime: null });
 
     const [showSettings, setShowSettings] = useState(false);
     const [cardOptions, setCardOptions] = useState([]);
@@ -429,8 +429,8 @@ function App() {
             }
         });
 
-        socket.on("gameCountdown", ({ seconds }) => {
-            setCountdown(seconds);
+        socket.on("gameCountdown", ({ seconds, startTime }) => {
+            setGameState(prev => ({ ...prev, startTime }));
         });
 
         socket.on("numberCalled", ({ allCalled }) => setGameState(prev => ({ ...prev, calledNumbers: allCalled })));
@@ -468,11 +468,22 @@ function App() {
     }, [auth, gameState.gameId]);
 
     useEffect(() => {
-        if (countdown > 0) {
-            const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-            return () => clearTimeout(timer);
+        if (gameState.startTime) {
+            const interval = setInterval(() => {
+                const now = Date.now();
+                const remaining = Math.ceil((gameState.startTime - now) / 1000);
+                if (remaining <= 0) {
+                    setCountdown(0);
+                    // Optionally clear start time if we want, but server will eventually send 'active' status
+                } else {
+                    setCountdown(remaining);
+                }
+            }, 1000);
+            return () => clearInterval(interval);
+        } else {
+            setCountdown(0);
         }
-    }, [countdown]);
+    }, [gameState.startTime]);
 
     const requestJoin = () => auth && gameState.status === 'pending' && socket.emit("requestCards", { ...auth, gameId: gameState.gameId });
     const getSpecificCard = () => auth && gameState.status === 'pending' && customCardNum && socket.emit("requestSpecificCard", { ...auth, gameId: gameState.gameId, cardNumber: customCardNum });
@@ -527,6 +538,7 @@ function App() {
 
 
     if (!auth) return <div className="App login-screen"><h2>{t('invalid')}</h2></div>;
+    if (!player) return <div className="App login-screen"><h2>Loading... / በመጫን ላይ...</h2><div className="pulse-dot"></div></div>;
 
     const displayPrize = gameState.pot;
 
@@ -588,7 +600,14 @@ function App() {
 
                 {gameState.status === 'pending' && (
                     <div className="joining">
-                        <div className="timer-display">{t('hostMsg')}</div>
+                        <div className="timer-display">
+                            {countdown > 0 ? (
+                                <div className="lobby-countdown">
+                                    <span className="cnt-label">GAME STARTING IN</span>
+                                    <span className="cnt-value">{Math.floor(countdown / 60)}:{(countdown % 60).toString().padStart(2, '0')}</span>
+                                </div>
+                            ) : t('hostMsg')}
+                        </div>
                         <div className="bet-display">{t('bet')}: {gameState.betAmount}</div>
 
                         {myCards.length > 0 && (

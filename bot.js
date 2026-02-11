@@ -113,7 +113,8 @@ const startBot = (database, socketIo, startGameLogic) => {
             [{ text: "📋 Transactions" }, { text: "📈 Global Stats" }],
             [{ text: "📢 Broadcast Group Link" }, { text: "⚠️ Reset All Points" }],
             [{ text: "🔧 SMS & Webhook" }, { text: "📱 App Link" }],
-            [{ text: "💎 Manage Admin Balances" }, { text: "📢 Broadcast Announcement" }]
+            [{ text: "💎 Manage Admin Balances" }, { text: "📢 Broadcast Announcement" }],
+            [{ text: "🤖 Mng. House Bots" }]
         ],
         resize_keyboard: true,
         persistent: true
@@ -269,23 +270,33 @@ const startBot = (database, socketIo, startGameLogic) => {
     // --- AUTOMATIC END DAY REPORT ---
     const generateEndDayReport = async (chatId = null) => {
         try {
+            // PAYOUTS: Only count payouts to REAL players (exclude house bots)
             const payoutRes = await db.query(`
             SELECT COUNT(*) as count, COALESCE(SUM(pot), 0) as total_payouts
-            FROM games
-            WHERE status = 'finished' AND created_at::date = CURRENT_DATE
+            FROM games g
+            JOIN users u ON g.winner_id = u.id
+            WHERE g.status = 'finished' 
+              AND g.created_at::date = CURRENT_DATE
+              AND u.is_house_bot = FALSE
          `);
             const totalPayouts = parseInt(payoutRes.rows[0].total_payouts);
 
+            // REVENUE: Only count bets from REAL players (exclude house bots)
             const revenueRes = await db.query(`
             SELECT COALESCE(SUM(g.bet_amount), 0) as total_revenue
             FROM games g
             JOIN player_cards pc ON g.id = pc.game_id
-            WHERE g.status = 'finished' AND g.created_at::date = CURRENT_DATE
+            JOIN users u ON pc.user_id = u.id
+            WHERE g.status = 'finished' 
+              AND g.created_at::date = CURRENT_DATE
+              AND u.is_house_bot = FALSE
          `);
             const totalRevenue = parseInt(revenueRes.rows[0].total_revenue);
             const netProfit = totalRevenue - totalPayouts;
 
             // 50/50 Profit Split Logic
+            // If profit is negative, share is 0 or negative? Usually 0 distribution if loss.
+            // Let's keep it raw for now so admin sees the loss share.
             const share50 = Math.floor(netProfit * 0.50);
 
             // Save to DB (Upsert)
@@ -295,7 +306,9 @@ const startBot = (database, socketIo, startGameLogic) => {
             ON CONFLICT (date) DO UPDATE SET 
                 total_revenue = EXCLUDED.total_revenue,
                 total_payout = EXCLUDED.total_payout,
-                net_profit = EXCLUDED.net_profit
+                net_profit = EXCLUDED.net_profit,
+                system_share = EXCLUDED.system_share,
+                admin_shares = EXCLUDED.admin_shares
          `, [totalRevenue, totalPayouts, netProfit, share50, JSON.stringify({ share2: share50 })]);
 
             const msg = `📊 **DAILY NET PROFIT REPORT** 📊\n\n` +
@@ -745,6 +758,46 @@ const startBot = (database, socketIo, startGameLogic) => {
                 return;
             }
 
+            // HOUSE BOTS HANDLERS
+            if (action.startsWith('hbot_')) {
+                if (!await isAdmin(tgId)) return bot.answerCallbackQuery(cq.id, { text: "Not authorized!" });
+
+                if (action === 'hbot_enable' || action === 'hbot_disable') {
+                    const newValue = action === 'hbot_enable' ? 'true' : 'false';
+                    await db.query("INSERT INTO system_settings (key, value) VALUES ('house_bots_enabled', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [newValue]);
+                    await bot.answerCallbackQuery(cq.id, { text: `Bots ${newValue === 'true' ? 'Enabled' : 'Disabled'}!` });
+                }
+
+                // Refresh View (for both toggle and refresh click)
+                const settingRes = await db.query("SELECT value FROM system_settings WHERE key = 'house_bots_enabled'");
+                const isEnabled = settingRes.rows.length && settingRes.rows[0].value === 'true';
+
+                const botStats = await db.query("SELECT COUNT(*) as count, SUM(points) as total_points FROM users WHERE is_house_bot = TRUE");
+                const count = botStats.rows[0].count;
+                const earnings = botStats.rows[0].total_points || 0;
+
+                const statusIcon = isEnabled ? "✅ Enabled" : "🔴 Disabled";
+                const statusText = `🤖 **House Bots Manager**\n\n` +
+                    `**Status:** ${statusIcon}\n` +
+                    `**Total Bots:** ${count}\n` +
+                    `**💰 Bot Earnings:** ${earnings}\n` +
+                    `*(Total accumulated points won by bots. This mimics House Profit.)*`;
+
+                const kb = {
+                    inline_keyboard: [
+                        [{ text: isEnabled ? "🔴 Disable Bots" : "✅ Enable Bots", callback_data: isEnabled ? "hbot_disable" : "hbot_enable" }],
+                        [{ text: "🔄 Refresh Stats", callback_data: "hbot_refresh" }]
+                    ]
+                };
+
+                try {
+                    await bot.editMessageText(statusText, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: kb });
+                } catch (e) { } // Ignore if identical
+
+                if (action === 'hbot_refresh') await bot.answerCallbackQuery(cq.id, { text: "Stats Refreshed" });
+                return;
+            }
+
             if (action === 'dummy_deposit') {
                 const bankRes = await db.query("SELECT value FROM system_settings WHERE key = 'bank_details'");
                 chatStates[chatId] = { step: 'awaiting_deposit_amount' };
@@ -972,16 +1025,53 @@ const startBot = (database, socketIo, startGameLogic) => {
                         await syncAdminMessages(adminMsgIds, doneText, tgId);
 
                         bot.sendMessage(req.telegram_id, `✅ *Withdrawal Sent!*\n\n${val} Points processed.`, { parse_mode: "Markdown" }).catch(() => { });
-                    } else {
-                        await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [parseInt(val), req.user_id]);
-                        await db.query("UPDATE withdrawal_requests SET status = 'rejected' WHERE id = $1", [targetId]);
+                    }
+                    else if (decision === 'reject') {
+                        if (parts.length === 5) {
+                            // Reason provided
+                            const reasonCode = parts[4];
+                            let reasonText = "Admin rejected request.";
 
-                        const doneText = `❌ *REFUNDED by ${adminUser?.username}*\nAmount: ${val}`;
-                        await syncAdminMessages(adminMsgIds, doneText, tgId);
+                            if (reasonCode === 'wrong_info') reasonText = "❌ Rejected: Incorrect Bank Info. / የተሳሳተ የባንክ መረጃ።";
+                            if (reasonCode === 'fraud') reasonText = "❌ Rejected: Suspected Fraud/Abuse. / ማጭበርበር ተጠርጥሯል።";
+                            if (reasonCode === 'other') {
+                                // Handled via state, but if callback comes with 'other' payload (e.g. from a past state), ignore or handle generic?
+                                // Actually, 'other' button should just trigger state, not a final reject callback.
+                                // Wait, the button "Other" should have callback `wd_reject_reason_start_${targetId}_${val}` or similar?
+                                // Let's adjust logic below.
+                            }
 
-                        bot.sendMessage(req.telegram_id, `❌ *Withdrawal Failed*\nPoints refunded.`, { parse_mode: "Markdown" }).catch(() => { });
+                            await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [parseInt(val), req.user_id]);
+                            await db.query("UPDATE withdrawal_requests SET status = 'rejected', rejection_reason = $1 WHERE id = $2", [reasonText, targetId]);
+
+                            const doneText = `❌ *REJECTED by ${adminUser?.username}*\nReason: ${reasonCode}`;
+                            await syncAdminMessages(adminMsgIds, doneText, tgId);
+
+                            bot.sendMessage(req.telegram_id, `❌ *Withdrawal Rejected*\n\nReason: ${reasonText}\n\nPoints have been refunded.`, { parse_mode: "Markdown" }).catch(() => { });
+                        } else {
+                            // Show Reason Menu
+                            const kb = {
+                                inline_keyboard: [
+                                    [{ text: "Wrong Info / የተሳሳተ መረጃ", callback_data: `wd_reject_${targetId}_${val}_wrong_info` }],
+                                    [{ text: "Fraud / ማጭበርበር", callback_data: `wd_reject_${targetId}_${val}_fraud` }],
+                                    [{ text: "Other / ሌላ (Type Custom)", callback_data: `wd_reject_custom_${targetId}_${val}` }]
+                                ]
+                            };
+                            bot.editMessageCaption(`⚠️ *Select Rejection Reason:*`, { chat_id: chatId, message_id: msg.message_id, parse_mode: "Markdown", reply_markup: kb });
+                        }
                     }
                 }
+            }
+
+            if (action.startsWith('wd_reject_custom_')) {
+                const parts = action.split('_');
+                const targetId = parseInt(parts[3]);
+                const val = parts[4];
+
+                chatStates[chatId] = { step: 'awaiting_wd_rejection_reason', targetId: targetId, amount: val, msgId: msg.message_id };
+                bot.sendMessage(chatId, `⌨️ **Type the rejection reason:**`, { reply_markup: { force_reply: true } });
+                await bot.answerCallbackQuery(cq.id);
+                return;
             }
 
             if (action.startsWith('adm_confirm_')) {
@@ -1113,6 +1203,15 @@ const startBot = (database, socketIo, startGameLogic) => {
             if (url) {
                 bot.sendMessage(chatId, "📢 **Click to Join:**", { reply_markup: { inline_keyboard: [[{ text: "📢 JOIN GROUP", url: url }]] }, parse_mode: "Markdown" });
             } else {
+                bot.sendMessage(chatId, "⚠️ No group link set.");
+            }
+            return;
+        }
+
+        if (text === "📢 Announce Game Day") {
+            if (await isSuperAdmin(tgId)) {
+                const groupRes = await db.query("SELECT value FROM system_settings WHERE key = 'group_link'");
+                const url = groupRes.rows[0]?.value;
                 bot.sendMessage(chatId, "⚠️ No group link set.");
             }
             return;
@@ -1589,8 +1688,11 @@ const startBot = (database, socketIo, startGameLogic) => {
                 try {
                     const payoutRes = await db.query(`
                     SELECT COUNT(*) as count, COALESCE(SUM(pot), 0) as total_payouts
-                    FROM games
-                    WHERE status = 'finished' AND created_at::date = CURRENT_DATE
+                    FROM games g
+                    JOIN users u ON g.winner_id = u.id
+                    WHERE g.status = 'finished' 
+                      AND g.created_at::date = CURRENT_DATE
+                      AND u.is_house_bot = FALSE
                  `);
                     const count = payoutRes.rows[0].count;
                     const totalPayouts = parseInt(payoutRes.rows[0].total_payouts);
@@ -1599,7 +1701,10 @@ const startBot = (database, socketIo, startGameLogic) => {
                     SELECT COALESCE(SUM(g.bet_amount), 0) as total_revenue
                     FROM games g
                     JOIN player_cards pc ON g.id = pc.game_id
-                    WHERE g.status = 'finished' AND g.created_at::date = CURRENT_DATE
+                    JOIN users u ON pc.user_id = u.id
+                    WHERE g.status = 'finished' 
+                      AND g.created_at::date = CURRENT_DATE
+                      AND u.is_house_bot = FALSE
                  `);
                     const totalRevenue = parseInt(revenueRes.rows[0].total_revenue);
                     const profit = totalRevenue - totalPayouts;
@@ -1650,6 +1755,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 chatStates[chatId] = { step: 'awaiting_reset_confirm' };
                 return bot.sendMessage(chatId, "⚠️ **DANGER ZONE** ⚠️\n\nThis will set ALL players' points to 0.\nAre you sure?\n\nType **CONFIRM** to proceed.", { parse_mode: "Markdown" });
             }
+
             if (text.startsWith("🔧 SMS & Webhook")) {
                 const smsHelp = `🔧 **Download SMS Forwarder App**\n\n` +
                     `👇 **Click link below to download:**\n` +
@@ -1658,65 +1764,92 @@ const startBot = (database, socketIo, startGameLogic) => {
                     `\`${publicUrl}/api/sms-webhook\``;
                 return bot.sendMessage(chatId, smsHelp, { parse_mode: "Markdown", disable_web_page_preview: true });
             }
-            if (text.startsWith("📱 App Link")) {
-                if (!publicUrl) return bot.sendMessage(chatId, "❌ Public URL not set in .env");
-                return bot.sendMessage(chatId, `📱 **Bingo App Link:**\n${publicUrl}\n\n_Click to open or copy._`, { parse_mode: "Markdown" });
-            }
-            if (text.startsWith("📜 Players")) {
-                try {
-                    const res = await db.query("SELECT username, points, phone_number FROM users ORDER BY created_at DESC LIMIT 200");
 
-                    let msg = "📜 All Players List\n\n";
-                    if (res.rows.length === 0) msg += "No players found.";
+            if (text === "🤖 Mng. House Bots") {
+                if (await isAdmin(tgId)) {
+                    const settingRes = await db.query("SELECT value FROM system_settings WHERE key = 'house_bots_enabled'");
+                    const isEnabled = settingRes.rows.length && settingRes.rows[0].value === 'true';
 
-                    const chunks = [];
-                    let currentChunk = msg;
+                    const botStats = await db.query("SELECT COUNT(*) as count, SUM(points) as total_points FROM users WHERE is_house_bot = TRUE");
+                    const count = botStats.rows[0].count;
+                    const earnings = botStats.rows[0].total_points || 0;
 
-                    res.rows.forEach((u, i) => {
-                        const line = `${i + 1}. ${u.username} (${u.phone_number || 'No Phone'}): ${u.points}\n`;
-                        if ((currentChunk + line).length > 4000) {
-                            chunks.push(currentChunk);
-                            currentChunk = line;
-                        } else {
-                            currentChunk += line;
-                        }
-                    });
-                    chunks.push(currentChunk);
+                    const statusIcon = isEnabled ? "✅ Enabled" : "🔴 Disabled";
+                    const statusText = `🤖 **House Bots Manager**\n\n` +
+                        `**Status:** ${statusIcon}\n` +
+                        `**Total Bots:** ${count}\n` +
+                        `**💰 Bot Earnings:** ${earnings}\n` +
+                        `*(Total accumulated points won by bots. This mimics House Profit.)*`;
 
-                    for (const chunk of chunks) {
-                        await bot.sendMessage(chatId, chunk).catch((e) => { console.error("Player List Send Error:", e); });
-                    }
-                } catch (e) { console.error(e); }
+                    const kb = {
+                        inline_keyboard: [
+                            [{ text: isEnabled ? "🔴 Disable Bots" : "✅ Enable Bots", callback_data: isEnabled ? "hbot_disable" : "hbot_enable" }],
+                            [{ text: "🔄 Refresh Stats", callback_data: "hbot_refresh" }]
+                        ]
+                    };
+                    bot.sendMessage(chatId, statusText, { parse_mode: "Markdown", reply_markup: kb });
+                }
                 return;
             }
-            if (text.startsWith("📋 Transactions")) {
-                try {
-                    const res = await db.query(`
+        }
+        if (text.startsWith("📱 App Link")) {
+            if (!publicUrl) return bot.sendMessage(chatId, "❌ Public URL not set in .env");
+            return bot.sendMessage(chatId, `📱 **Bingo App Link:**\n${publicUrl}\n\n_Click to open or copy._`, { parse_mode: "Markdown" });
+        }
+        if (text.startsWith("📜 Players")) {
+            try {
+                const res = await db.query("SELECT username, points, phone_number FROM users ORDER BY created_at DESC LIMIT 200");
+
+                let msg = "📜 All Players List\n\n";
+                if (res.rows.length === 0) msg += "No players found.";
+
+                const chunks = [];
+                let currentChunk = msg;
+
+                res.rows.forEach((u, i) => {
+                    const line = `${i + 1}. ${u.username} (${u.phone_number || 'No Phone'}): ${u.points}\n`;
+                    if ((currentChunk + line).length > 4000) {
+                        chunks.push(currentChunk);
+                        currentChunk = line;
+                    } else {
+                        currentChunk += line;
+                    }
+                });
+                chunks.push(currentChunk);
+
+                for (const chunk of chunks) {
+                    await bot.sendMessage(chatId, chunk).catch((e) => { console.error("Player List Send Error:", e); });
+                }
+            } catch (e) { console.error(e); }
+            return;
+        }
+        if (text.startsWith("📋 Transactions")) {
+            try {
+                const res = await db.query(`
                     SELECT t.*, u.username as user_name
                     FROM transactions t
                     LEFT JOIN users u ON t.user_id = u.id
                     ORDER BY t.created_at DESC LIMIT 15
                 `);
 
-                    let msg = "📋 *Last 15 Transactions*\n\n";
-                    if (res.rows.length === 0) msg += "No transactions found.";
+                let msg = "📋 *Last 15 Transactions*\n\n";
+                if (res.rows.length === 0) msg += "No transactions found.";
 
-                    res.rows.forEach(t => {
-                        const date = dayjs(t.created_at).format('MM/DD HH:mm');
-                        let desc = t.description || 'N/A';
-                        const safeUser = escapeMarkdown(t.user_name || 'Unknown');
-                        const safeType = escapeMarkdown(t.type);
-                        const safeDesc = escapeMarkdown(desc);
+                res.rows.forEach(t => {
+                    const date = dayjs(t.created_at).format('MM/DD HH:mm');
+                    let desc = t.description || 'N/A';
+                    const safeUser = escapeMarkdown(t.user_name || 'Unknown');
+                    const safeType = escapeMarkdown(t.type);
+                    const safeDesc = escapeMarkdown(desc);
 
-                        msg += `🔹 ${date} - *${safeUser}*\n   ${safeType}: ${t.amount} (${safeDesc})\n`;
-                    });
-                    bot.sendMessage(chatId, msg, { parse_mode: "Markdown" }).catch(e => console.error("Tx Send Error:", e));
-                } catch (e) { console.error("Tx Query Error:", e); }
-                return;
-            }
+                    msg += `🔹 ${date} - *${safeUser}*\n   ${safeType}: ${t.amount} (${safeDesc})\n`;
+                });
+                bot.sendMessage(chatId, msg, { parse_mode: "Markdown" }).catch(e => console.error("Tx Send Error:", e));
+            } catch (e) { console.error("Tx Query Error:", e); }
+            return;
         }
 
-        if (userIsSuperAdmin) {
+        if (await isSuperAdmin(tgId)) {
             if (text.startsWith("💸 Admin Transfer")) {
                 chatStates[chatId] = { step: 'awaiting_adm_transfer_search' };
                 return bot.sendMessage(chatId, "💸 *Admin to Admin Transfer*\n\nEnter the username of the Admin you are sending money to:", { parse_mode: "Markdown", reply_markup: { force_reply: true } });
@@ -1820,6 +1953,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                     const user = await getUser(tgId);
                     if (isNaN(amount) || amount <= 0) return bot.sendMessage(chatId, "❌ Invalid Amount.").catch(() => { });
                     if (amount < 50) return bot.sendMessage(chatId, "❌ Minimum withdrawal is 50 Points.").catch(() => { });
+
                     if (user.points < amount) {
                         delete chatStates[chatId];
                         return bot.sendMessage(chatId, "❌ Insufficient Funds.", { reply_markup: userKeyboard }).catch(() => { });
@@ -2295,6 +2429,34 @@ const startBot = (database, socketIo, startGameLogic) => {
                     bot.sendMessage(chatId, `✅ **Sent to ${count} users.**`, { reply_markup: adminKeyboard });
                     delete chatStates[chatId];
                 }
+
+                // --- WITHDRAWAL REJECTION CUSTOM REASON ---
+                else if (state.step === 'awaiting_wd_rejection_reason') {
+                    const reason = text.trim();
+                    const { targetId, amount } = state;
+
+                    // Fetch Request to get user ID
+                    const wdRes = await db.query("SELECT * FROM withdrawal_requests WHERE id = $1", [targetId]);
+                    if (wdRes.rows.length > 0) {
+                        const req = wdRes.rows[0];
+                        const adminMsgIds = req.admin_msg_ids || {};
+
+                        // Refund
+                        await db.query("UPDATE users SET points = points + $1 WHERE id = $2", [parseInt(amount), req.user_id]);
+                        // Reject with Reason
+                        await db.query("UPDATE withdrawal_requests SET status = 'rejected', rejection_reason = $1 WHERE id = $2", [reason, targetId]);
+
+                        const doneText = `❌ *REJECTED by ${user.username}*\nReason: ${reason}`;
+                        await syncAdminMessages(adminMsgIds, doneText, tgId);
+
+                        bot.sendMessage(req.telegram_id, `❌ *Withdrawal Rejected*\n\nReason: ${reason}\n\nPoints have been refunded.`, { parse_mode: "Markdown" }).catch(() => { });
+                        bot.sendMessage(chatId, "✅ Rejection processed.");
+                    } else {
+                        bot.sendMessage(chatId, "❌ Request not found.");
+                    }
+                    delete chatStates[chatId];
+                }
+
 
             } catch (err) { console.error(err); delete chatStates[chatId]; bot.sendMessage(chatId, "❌ Error.").catch(() => { }); }
         }

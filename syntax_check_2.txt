@@ -1,0 +1,10 @@
+🧹 Checking for Stale/Ghost Games...
+Syntax OK
+⚠️ Cleaning up Stale Game #1 (ID: 469, Status: pending)
+💰 Refunded 0 players.
+⚠️ Cleaning up Stale Game #2 (ID: 470, Status: pending)
+💰 Refunded 0 players.
+Cleanup Error: TypeError: Cannot read properties of undefined (reading 'emit')
+    at cleanupStaleGames (C:\Users\berek\bingo-project\gameManager.js:893:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+✅ Database initialized.

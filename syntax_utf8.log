@@ -1,0 +1,32 @@
+﻿node : C:\Users\berek\b
+ingo-project\bot.js:243
+8
+At line:1 char:1
++ node -c bot.js 2>&1 
+| Out-File -Encoding 
+UTF8 syntax_utf8.log
++ ~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo     
+         : NotSpecifi  
+  ed: (C:\Users\bere   
+ k\bingo-project\bo    
+t.js:2438:String)     
+[], RemoteExceptio    n
+    + FullyQualifiedEr 
+   rorId : NativeComm  
+  andError
+ 
+        });
+        ^
+
+SyntaxError: Missing 
+catch or finally after 
+try
+    at wrapSafe (node:i
+nternal/modules/cjs/loa
+der:1691:18)
+    at checkSyntax (nod
+e:internal/main/check_s
+yntax:76:3)
+
+Node.js v24.11.0

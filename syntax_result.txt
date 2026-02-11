@@ -1,0 +1,17 @@
+Syntax Error Detected:
+Missing catch or finally after try
+C:\Users\berek\bingo-project\bot.js:2438
+        });
+        ^
+
+SyntaxError: Missing catch or finally after try
+    at wrapSafe (node:internal/modules/cjs/loader:1691:18)
+    at Module._compile (node:internal/modules/cjs/loader:1734:20)
+    at Object..js (node:internal/modules/cjs/loader:1893:10)
+    at Module.load (node:internal/modules/cjs/loader:1480:32)
+    at Module._load (node:internal/modules/cjs/loader:1299:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:244:24)
+    at Module.require (node:internal/modules/cjs/loader:1503:12)
+    at require (node:internal/modules/helpers:152:16)
+    at Object.<anonymous> (C:\Users\berek\bingo-project\scripts\check_syntax.js:2:5)

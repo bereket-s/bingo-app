@@ -1,0 +1,9 @@
+C:\Users\berek\bingo-project\bot.js:2438
+        });
+        ^
+
+SyntaxError: Missing catch or finally after try
+    at wrapSafe (node:internal/modules/cjs/loader:1691:18)
+    at checkSyntax (node:internal/main/check_syntax:76:3)
+
+Node.js v24.11.0

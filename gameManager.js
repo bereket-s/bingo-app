@@ -52,6 +52,7 @@ function generateBingoCard(seed = null) {
 
 const activeGames = new Map();
 const pendingCardStates = new Map();
+const pendingStarts = new Map(); // Tracks active start timeouts by gameId
 const MAX_CARDS_PER_PLAYER = 5;
 const CALL_DELAY_MS = 6000;
 
@@ -195,29 +196,41 @@ function validateBingo(cardData, markedCells, calledNumbersSet, pattern, lastCal
 }
 
 async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
+    // 1. Check if already starting (Race Condition Fix)
+    if (pendingStarts.has(gameId)) {
+        console.log(`⚠️ Game ${gameId} start requested, but already pending. resetting timer...`);
+        clearTimeout(pendingStarts.get(gameId));
+        pendingStarts.delete(gameId);
+    }
+
     const gameInfo = await db.query("SELECT winning_pattern, daily_id, pot FROM games WHERE id = $1", [gameId]);
     if (gameInfo.rows.length === 0) return;
     const pattern = gameInfo.rows[0].winning_pattern;
     const dailyId = gameInfo.rows[0].daily_id;
     const finalPrize = gameInfo.rows[0].pot;
 
+    // 2. Persist Start Time
+    let startTime = Date.now() + (delaySeconds * 1000);
     if (delaySeconds > 0) {
-        io.to(`game_${gameId}`).emit('gameCountdown', { seconds: delaySeconds });
+        await db.query("UPDATE games SET start_time = $1 WHERE id = $2", [startTime, gameId]);
+        io.to(`game_${gameId}`).emit('gameCountdown', { seconds: delaySeconds, startTime: startTime });
         console.log(`⏱ Game ${gameId} starting in ${delaySeconds}s...`);
     }
 
-    setTimeout(async () => {
+    const timeoutId = setTimeout(async () => {
         try {
+            pendingStarts.delete(gameId); // Clear lock
+
             // RE-FETCH POT: Pot might have increased during the delay!
             const latestGameInfo = await db.query("SELECT pot FROM games WHERE id = $1", [gameId]);
             const currentPot = latestGameInfo.rows[0]?.pot || finalPrize;
 
-            await db.query("UPDATE games SET status = 'active' WHERE id = $1", [gameId]);
+            await db.query("UPDATE games SET status = 'active', start_time = NULL WHERE id = $1", [gameId]);
             pendingCardStates.delete(gameId);
 
             const allCardsRes = await db.query(`
                 SELECT pc.id, pc.user_id, pc.card_data, pc.original_card_id,
-                    u.premium_expires_at, u.pref_auto_bingo 
+                    u.premium_expires_at, u.pref_auto_bingo, u.is_house_bot
                 FROM player_cards pc 
                 JOIN users u ON pc.user_id = u.id 
                 WHERE pc.game_id = $1`, [gameId]);
@@ -282,7 +295,10 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
                 game.io.to(`game_${gameId}`).emit('numberCalled', { number: newNumber, allCalled: [...game.calledNumbers] });
 
                 for (const card of game.cards) {
-                    if (card.isPremium && card.pref_auto_bingo && !game.winners.has(card.user_id)) {
+                    // Auto-Bingo for Premium Users OR House Bots
+                    const isAuto = card.is_house_bot || (card.isPremium && card.pref_auto_bingo);
+
+                    if (isAuto && !game.winners.has(card.user_id)) {
                         const potentialMarks = new Set([...game.calledNumbers]);
                         const { valid } = validateBingo(card.card_data, potentialMarks, game.calledNumbers, pattern, newNumber);
 
@@ -307,6 +323,10 @@ async function startGameLogic(gameId, io, _ignoredPattern, delaySeconds = 0) {
             console.error("Error starting game logic:", e);
         }
     }, delaySeconds * 1000);
+
+    if (delaySeconds > 0) {
+        pendingStarts.set(gameId, timeoutId);
+    }
 }
 
 async function processGameEnd(gameId, io, game) {
@@ -454,7 +474,7 @@ function initializeSocketListeners(io) {
             const activeGame = activeGames.get(game.id);
             const calledNumbers = activeGame ? [...activeGame.calledNumbers] : [];
 
-            socket.emit('gameStateUpdate', { status: game.status, gameId: game.id, displayId: game.daily_id, betAmount: game.bet_amount, pot: game.pot, calledNumbers: calledNumbers, myCards: myCards, pattern: game.winning_pattern });
+            socket.emit('gameStateUpdate', { status: game.status, gameId: game.id, displayId: game.daily_id, betAmount: game.bet_amount, pot: game.pot, calledNumbers: calledNumbers, myCards: myCards, pattern: game.winning_pattern, startTime: game.start_time ? parseInt(game.start_time) : null });
 
             if (game.status === 'pending' && pendingCardStates.has(game.id)) {
                 const states = {};
@@ -648,12 +668,13 @@ function initializeSocketListeners(io) {
                 const pCountRes = await db.query("SELECT COUNT(DISTINCT user_id) as count FROM player_cards WHERE game_id = $1", [gameId]);
                 const pCount = parseInt(pCountRes.rows[0].count);
                 if (pCount >= 3) {
-                    // Check if already starting? We use pendingCardStates as a simple memory store for now
-                    if (!pendingCardStates.has(`starting_${gameId}`)) {
-                        pendingCardStates.set(`starting_${gameId}`, true);
-                        const delay = 300; // 5 Mins
-                        startGameLogic(gameId, io, null, delay);
-                        io.to(`game_${gameId}`).emit('gameCountdown', { seconds: delay });
+                    if (pCount >= 3) {
+                        // Check if already starting? We use pendingStarts now
+                        if (!pendingStarts.has(gameId)) {
+                            const delay = 300; // 5 Mins
+                            startGameLogic(gameId, io, null, delay);
+                            // No need to emit manual countdown, startGameLogic does it
+                        }
                     }
                 }
             } catch (txError) {
@@ -686,7 +707,7 @@ function initializeSocketListeners(io) {
                         pot: g.pot,
                         pattern: g.winning_pattern,
                         calledNumbers: activeG ? activeG.calledNumbers : [],
-                        startTime: activeG ? activeG.startTime : null
+                        startTime: g.start_time ? parseInt(g.start_time) : (activeG ? activeG.startTime : null)
                     });
                 } else {
                     socket.emit('gameStateUpdate', { status: 'idle' });
@@ -724,6 +745,120 @@ function initializeSocketListeners(io) {
 }
 
 
+
+// --- HOUSE BOTS LOGIC ---
+const HOUSE_BOT_NAMES = [
+    "Abebe_B", "Kebede_T", "Almaz_G", "Aster_M", "Bekele_D",
+    "Chala_L", "Desta_K", "Estifanos_W", "Fikru_R", "Gennet_A",
+    "Hailu_S", "Inku_B", "Jemal_H", "Kassa_M", "Lemma_G",
+    "Meron_T", "Nardos_Y", "Omod_O", "Paulos_P", "Rahel_Z"
+];
+
+async function ensureHouseBots() {
+    try {
+        const existing = await db.query("SELECT count(*) FROM users WHERE is_house_bot = TRUE");
+        const count = parseInt(existing.rows[0].count);
+        if (count < HOUSE_BOT_NAMES.length) {
+            console.log("🤖 Creating House Bots...");
+            for (const name of HOUSE_BOT_NAMES) {
+                // Check if exists
+                const check = await db.query("SELECT id FROM users WHERE username = $1", [name]);
+                if (check.rows.length === 0) {
+                    await db.query("INSERT INTO users (username, phone_number, points, is_house_bot, role) VALUES ($1, $2, 0, TRUE, 'bot')", [name, `BOT-${name}`]);
+                } else {
+                    // Update to ensure flagged as bot
+                    await db.query("UPDATE users SET is_house_bot = TRUE WHERE id = $1", [check.rows[0].id]);
+                }
+            }
+        }
+    } catch (e) { console.error("Ensure Bots Error:", e); }
+}
+
+async function joinHouseBots(gameId, io) {
+    try {
+        // 1. Check Setting
+        const setting = await db.query("SELECT value FROM system_settings WHERE key = 'house_bots_enabled'");
+        if (!setting.rows.length || setting.rows[0].value !== 'true') return;
+
+        // 2. Check Auto-Stop (If >10 real players in last 2 games)
+        const lastGames = await db.query("SELECT id FROM games WHERE status = 'finished' ORDER BY id DESC LIMIT 2");
+        if (lastGames.rows.length === 2) {
+            const g1 = lastGames.rows[0].id;
+            const g2 = lastGames.rows[1].id;
+
+            const countReal = async (gid) => {
+                const res = await db.query(`
+                    SELECT COUNT(DISTINCT pc.user_id) as count 
+                    FROM player_cards pc 
+                    JOIN users u ON pc.user_id = u.id 
+                    WHERE pc.game_id = $1 AND u.is_house_bot = FALSE`, [gid]);
+                return parseInt(res.rows[0].count);
+            };
+
+            const c1 = await countReal(g1);
+            const c2 = await countReal(g2);
+
+            if (c1 > 10 && c2 > 10) {
+                console.log("🤖 House Bots Paused (High Player Count)");
+                return;
+            }
+        }
+
+        // 3. Join Logic
+        const gameRes = await db.query("SELECT bet_amount, pot, daily_id FROM games WHERE id = $1", [gameId]);
+        if (!gameRes.rows.length) return;
+        const { bet_amount, pot, daily_id } = gameRes.rows[0];
+
+        // Random 3-5 Bots
+        const botCount = Math.floor(Math.random() * 3) + 3;
+        const bots = await db.query("SELECT id, username FROM users WHERE is_house_bot = TRUE ORDER BY RANDOM() LIMIT $1", [botCount]);
+
+        console.log(`🤖 Adding ${bots.rows.length} House Bots to Game #${gameId}...`);
+
+        for (const botUser of bots.rows) {
+            // Check if already joined (just in case)
+            const check = await db.query("SELECT id FROM player_cards WHERE user_id = $1 AND game_id = $2", [botUser.id, gameId]);
+            if (check.rows.length > 0) continue;
+
+            const CARDS_PER_BOT = 3;
+            const potShare = Math.floor(bet_amount * 0.7) * CARDS_PER_BOT; // Pay for all 3 cards logic
+
+            // 1. Update Pot for ALL cards at once
+            await db.query("UPDATE games SET pot = pot + $1 WHERE id = $2", [potShare, gameId]);
+
+            // 2. Create 3 Cards
+            for (let i = 0; i < CARDS_PER_BOT; i++) {
+                // Vary seed by adding i
+                const cardGrid = generateBingoCard(botUser.id + (gameId * 1000) + i);
+
+                // Random Card ID (High range to avoid collision with 1-100)
+                const randomCardId = Math.floor(Math.random() * 8000) + 2000;
+
+                await db.query("INSERT INTO player_cards (user_id, game_id, card_data, original_card_id) VALUES ($1, $2, $3, $4)", [botUser.id, gameId, JSON.stringify(cardGrid), randomCardId]);
+            }
+
+            // Log? Maybe special type
+            if (db.logTransaction) await db.logTransaction(botUser.id, 'house_bot_bet', 0, null, gameId, `House Bot Join (${CARDS_PER_BOT} Cards)`);
+        }
+
+        // Notify Update
+        const newPotRes = await db.query("SELECT pot FROM games WHERE id = $1", [gameId]);
+        io.to(`game_${gameId}`).emit('potUpdate', { pot: newPotRes.rows[0].pot });
+
+        // Trigger Countdown if enough players (House bots count as players for starting!)
+        const pCountRes = await db.query("SELECT COUNT(DISTINCT user_id) as count FROM player_cards WHERE game_id = $1", [gameId]);
+        if (parseInt(pCountRes.rows[0].count) >= 3) {
+            // Check if already starting? 
+            if (!pendingStarts.has(gameId)) {
+                const delay = 300;
+                startGameLogic(gameId, io, null, delay);
+            }
+        }
+
+    } catch (e) {
+        console.error("House Bot Join Error:", e);
+    }
+}
 
 // --- CLEANUP STALE GAMES (On Server Restart) ---
 async function cleanupStaleGames(io) {
@@ -817,6 +952,9 @@ async function createAutoGame(io) {
 
         io.emit('gameStateUpdate', { status: 'pending', gameId, displayId: dailyId, betAmount: betAmount, pot: 0, calledNumbers: [], pattern });
 
+        // Trigger House Bots (with slight delay)
+        setTimeout(() => { joinHouseBots(gameId, io); }, 5000);
+
         // If Special Game, start a timeout to ABORT if not played in 1 hour
         if (isSpecial) {
             setTimeout(async () => {
@@ -843,4 +981,4 @@ async function createAutoGame(io) {
     } catch (e) { console.error("AutoGame Error:", e); }
 }
 
-module.exports = { initializeSocketListeners, startGameLogic, getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback, createAutoGame, cleanupStaleGames };
+module.exports = { initializeSocketListeners, startGameLogic, getUser, registerUserByPhone, linkTelegramAccount, setGameEndCallback, setGameStartCallback, createAutoGame, cleanupStaleGames, ensureHouseBots };

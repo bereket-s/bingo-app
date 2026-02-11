@@ -8,7 +8,7 @@ const bodyParser = require('body-parser');
 
 const db = require('./db');
 const { startBot } = require('./bot');
-const { initializeSocketListeners, startGameLogic, createAutoGame, cleanupStaleGames } = require('./gameManager');
+const { initializeSocketListeners, startGameLogic, createAutoGame, cleanupStaleGames, ensureHouseBots } = require('./gameManager');
 
 const app = express();
 const server = http.createServer(app);
@@ -32,7 +32,9 @@ initializeSocketListeners(io);
 
 // Clean up stale games first, THEN start the auto-loop
 cleanupStaleGames(io).then(() => {
-    createAutoGame(io);
+    ensureHouseBots().then(() => {
+        createAutoGame(io);
+    });
 });
 app.post('/api/sms-webhook', async (req, res) => {
     // 1. Sanitize Input
