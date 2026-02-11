@@ -776,9 +776,15 @@ async function ensureHouseBots() {
 
 async function joinHouseBots(gameId, io) {
     try {
+        console.log(`🤖 joinHouseBots called for Game #${gameId}`);
+
         // 1. Check Setting
         const setting = await db.query("SELECT value FROM system_settings WHERE key = 'house_bots_enabled'");
-        if (!setting.rows.length || setting.rows[0].value !== 'true') return;
+        if (!setting.rows.length || setting.rows[0].value !== 'true') {
+            const val = setting.rows.length ? setting.rows[0].value : 'null';
+            console.log(`🤖 House Bots Disabled (Setting: ${val})`);
+            return;
+        }
 
         // 2. Check Auto-Stop (If >10 real players in last 2 games)
         const lastGames = await db.query("SELECT id FROM games WHERE status = 'finished' ORDER BY id DESC LIMIT 2");
@@ -797,21 +803,33 @@ async function joinHouseBots(gameId, io) {
 
             const c1 = await countReal(g1);
             const c2 = await countReal(g2);
+            console.log(`🤖 Auto-Stop Check: Game ${g1} (${c1} real), Game ${g2} (${c2} real)`);
 
             if (c1 > 10 && c2 > 10) {
                 console.log("🤖 House Bots Paused (High Player Count)");
                 return;
             }
+        } else {
+            console.log(`🤖 Auto-Stop Skipped (Not enough history: ${lastGames.rows.length})`);
         }
 
         // 3. Join Logic
         const gameRes = await db.query("SELECT bet_amount, pot, daily_id FROM games WHERE id = $1", [gameId]);
-        if (!gameRes.rows.length) return;
+        if (!gameRes.rows.length) {
+            console.log("🤖 Game not found!");
+            return;
+        }
         const { bet_amount, pot, daily_id } = gameRes.rows[0];
 
         // Random 3-5 Bots
         const botCount = Math.floor(Math.random() * 3) + 3;
         const bots = await db.query("SELECT id, username FROM users WHERE is_house_bot = TRUE ORDER BY RANDOM() LIMIT $1", [botCount]);
+
+        console.log(`🤖 Attempting to add ${bots.rows.length} bots (Target: ${botCount})...`);
+
+        if (bots.rows.length === 0) {
+            console.log("⚠️ No House Bots found in DB! Run ensureHouseBots().");
+        }
 
         console.log(`🤖 Adding ${bots.rows.length} House Bots to Game #${gameId}...`);
 
@@ -851,6 +869,7 @@ async function joinHouseBots(gameId, io) {
             // Check if already starting? 
             if (!pendingStarts.has(gameId)) {
                 const delay = 300;
+                console.log("🤖 House Bots triggered Countdown!");
                 startGameLogic(gameId, io, null, delay);
             }
         }
