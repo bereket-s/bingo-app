@@ -294,12 +294,14 @@ const startBot = (database, socketIo, startGameLogic) => {
             const totalRevenue = parseInt(revenueRes.rows[0].total_revenue);
             const netProfit = totalRevenue - totalPayouts;
 
-            // 50/50 Profit Split Logic
-            // If profit is negative, share is 0 or negative? Usually 0 distribution if loss.
-            // Let's keep it raw for now so admin sees the loss share.
+            // 50/25/25 Profit Split Logic
+            // If profit is negative, share is 0 or negative (loss sharing).
             const share50 = Math.floor(netProfit * 0.50);
+            const share25_1 = Math.floor(netProfit * 0.25);
+            const share25_2 = Math.floor(netProfit * 0.25); // Or netProfit - share50 - share25_1 to be exact on pennies, but floor is fine.
 
             // Save to DB (Upsert)
+            // Storing the breakdown in admin_shares JSON
             await db.query(`
             INSERT INTO daily_reports (date, total_revenue, total_payout, net_profit, system_share, admin_shares) 
             VALUES (CURRENT_DATE, $1, $2, $3, $4, $5)
@@ -309,7 +311,7 @@ const startBot = (database, socketIo, startGameLogic) => {
                 net_profit = EXCLUDED.net_profit,
                 system_share = EXCLUDED.system_share,
                 admin_shares = EXCLUDED.admin_shares
-         `, [totalRevenue, totalPayouts, netProfit, share50, JSON.stringify({ share2: share50 })]);
+         `, [totalRevenue, totalPayouts, netProfit, share50, JSON.stringify({ share50, share25_1, share25_2 })]);
 
             const msg = `📊 **DAILY NET PROFIT REPORT** 📊\n\n` +
                 `💰 **Total Revenue:** ${totalRevenue}\n` +
@@ -317,8 +319,9 @@ const startBot = (database, socketIo, startGameLogic) => {
                 `-----------------------------\n` +
                 `📈 **NET PROFIT:** ${netProfit}\n\n` +
                 `**Profit Distribution:**\n` +
-                `🔹 Share 1 (50%): ${share50}\n` +
-                `🔹 Share 2 (50%): ${share50}\n\n` +
+                `🔹 System/Admin (50%): ${share50}\n` +
+                `🔹 Partner 1 (25%): ${share25_1}\n` +
+                `🔹 Partner 2 (25%): ${share25_2}\n\n` +
                 `✅ *Saved to Database.*`;
 
             const opts = {

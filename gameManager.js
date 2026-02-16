@@ -748,30 +748,33 @@ function initializeSocketListeners(io) {
 
 // --- HOUSE BOTS LOGIC ---
 const HOUSE_BOT_NAMES = [
-    "Abebe_B", "Kebede_T", "Almaz_G", "Aster_M", "Bekele_D",
-    "Chala_L", "Desta_K", "Estifanos_W", "Fikru_R", "Gennet_A",
-    "Hailu_S", "Inku_B", "Jemal_H", "Kassa_M", "Lemma_G",
-    "Meron_T", "Nardos_Y", "Omod_O", "Paulos_P", "Rahel_Z"
+    "Natan", "Yonas", "Bruk", "Caleb", "Dagim",
+    "Eyasus", "Fasil", "Gadisa", "Henok", "Iyasu",
+    "Jemal", "Kaleb", "Luel", "Mekbib", "Nahom",
+    "Olyad", "Paulos", "Qal", "Robel", "Samson",
+    "Tewodros", "Urael", "Vera", "Wondwossen", "Xavier",
+    "Yared", "Zelalem", "Abel", "Biruk", "Chernet",
+    "Dawit", "Ephrem", "Fitsum", "Girma", "Habtamu",
+    "Indale", "Jok", "Kirubel", "Lema", "Melaku",
+    "Natnael", "Ofa", "Petros", "Qedus", "Rediet",
+    "Solomon", "Tamirat", "Ujulu", "Wondimu", "Yidnekachew"
 ];
 
 async function ensureHouseBots() {
     try {
-        const existing = await db.query("SELECT count(*) FROM users WHERE is_house_bot = TRUE");
-        const count = parseInt(existing.rows[0].count);
-        if (count < HOUSE_BOT_NAMES.length) {
-            console.log("🤖 Creating House Bots...");
-            for (const name of HOUSE_BOT_NAMES) {
-                // Check if exists
-                const check = await db.query("SELECT id FROM users WHERE username = $1", [name]);
-                if (check.rows.length === 0) {
-                    await db.query("INSERT INTO users (username, phone_number, points, is_house_bot, role) VALUES ($1, $2, 0, TRUE, 'bot')", [name, `BOT-${name}`]);
-                } else {
-                    // Update to ensure flagged as bot
-                    await db.query("UPDATE users SET is_house_bot = TRUE WHERE id = $1", [check.rows[0].id]);
-                }
+        // Create bots if they don't exist
+        for (const name of HOUSE_BOT_NAMES) {
+            const check = await db.query("SELECT id FROM users WHERE username = $1", [name]);
+            if (check.rows.length === 0) {
+                await db.query("INSERT INTO users (username, phone_number, points, is_house_bot, role) VALUES ($1, $2, 0, TRUE, 'bot')", [name, `BOT-${name}`]);
+            } else {
+                // Ensure flagged as bot
+                await db.query("UPDATE users SET is_house_bot = TRUE WHERE id = $1", [check.rows[0].id]);
             }
         }
-    } catch (e) { console.error("Ensure Bots Error:", e); }
+    } catch (e) {
+        console.error("Ensure Bots Error:", e);
+    }
 }
 
 async function joinHouseBots(gameId, io) {
@@ -819,7 +822,7 @@ async function joinHouseBots(gameId, io) {
             console.log("🤖 Game not found!");
             return;
         }
-        const { bet_amount, pot, daily_id } = gameRes.rows[0];
+        const { bet_amount } = gameRes.rows[0];
 
         // Random 3-5 Bots
         const botCount = Math.floor(Math.random() * 3) + 3;
@@ -829,48 +832,107 @@ async function joinHouseBots(gameId, io) {
 
         if (bots.rows.length === 0) {
             console.log("⚠️ No House Bots found in DB! Run ensureHouseBots().");
+            return;
         }
 
         console.log(`🤖 Adding ${bots.rows.length} House Bots to Game #${gameId}...`);
 
+        // --- STAGGERED JOIN LOOP ---
         for (const botUser of bots.rows) {
+            // Check if game is still pending
+            const currentGameCheck = await db.query("SELECT status FROM games WHERE id = $1", [gameId]);
+            if (!currentGameCheck.rows.length || currentGameCheck.rows[0].status !== 'pending') {
+                console.log("🤖 Game start/abort detected, stopping bot joins.");
+                break;
+            }
+
             // Check if already joined (just in case)
             const check = await db.query("SELECT id FROM player_cards WHERE user_id = $1 AND game_id = $2", [botUser.id, gameId]);
             if (check.rows.length > 0) continue;
 
-            const CARDS_PER_BOT = 3;
-            const potShare = Math.floor(bet_amount * 0.7) * CARDS_PER_BOT; // Pay for all 3 cards logic
+            // Wait random delay (5-15 seconds)
+            const delay = Math.floor(Math.random() * 10000) + 5000;
+            console.log(`🤖 Bot ${botUser.username} waiting ${delay}ms...`);
+            await new Promise(r => setTimeout(r, delay));
 
-            // 1. Update Pot for ALL cards at once
-            await db.query("UPDATE games SET pot = pot + $1 WHERE id = $2", [potShare, gameId]);
+            // Re-check game status after delay
+            const postDelayCheck = await db.query("SELECT status FROM games WHERE id = $1", [gameId]);
+            if (!postDelayCheck.rows.length || postDelayCheck.rows[0].status !== 'pending') break;
+
+            const CARDS_PER_BOT = 3;
+            // Pay for all 3 cards logic
+            const potShare = Math.floor(bet_amount * 0.7) * CARDS_PER_BOT;
+
+            // 1. Update Pot
+            const updatedGame = await db.query("UPDATE games SET pot = pot + $1 WHERE id = $2 RETURNING pot", [potShare, gameId]);
+            const newPot = updatedGame.rows[0].pot;
 
             // 2. Create 3 Cards
             for (let i = 0; i < CARDS_PER_BOT; i++) {
                 // Vary seed by adding i
                 const cardGrid = generateBingoCard(botUser.id + (gameId * 1000) + i);
 
-                // Random Card ID (High range to avoid collision with 1-100)
-                const randomCardId = Math.floor(Math.random() * 8000) + 2000;
+                // Pick from visible range (1-100) so players see "Locked" cards
+                // Try to find a free slot
+                let randomCardId = -1;
+                let attempts = 0;
+                while (attempts < 20) {
+                    const candidate = Math.floor(Math.random() * 100) + 1;
+                    // Check DB for this game
+                    const taken = await db.query("SELECT id FROM player_cards WHERE game_id = $1 AND original_card_id = $2", [gameId, candidate]);
+                    if (taken.rows.length === 0) {
+                        randomCardId = candidate;
+                        break;
+                    }
+                    attempts++;
+                }
+
+                // If 1-100 is full or unlucky, fallback to high ID
+                if (randomCardId === -1) randomCardId = Math.floor(Math.random() * 8000) + 2000;
 
                 await db.query("INSERT INTO player_cards (user_id, game_id, card_data, original_card_id) VALUES ($1, $2, $3, $4)", [botUser.id, gameId, JSON.stringify(cardGrid), randomCardId]);
+
+                // LOCK THE CARD in Memory State so it appears taken
+                if (!pendingCardStates.has(gameId)) pendingCardStates.set(gameId, new Map());
+                const gameStates = pendingCardStates.get(gameId);
+                // Even though it's > 2000, IF we exposed these ranges, we'd want them locked. 
+                // But mainly, this is good practice. 
+                // Note: Real players usually pick 1-100. Bots pick 2000+. 
+                // So "locking" visually might not be noticed unless players search high numbers.
+                // However, user asked: "when players want to choose card they must see the card locked that is choosen by the bots"
+                // If bots chose 2000+, players won't see them anyway in the 1-100 list.
+                // UNLESS we make bots choose from 1-100??
+                // User said: "see the card locked". 
+                // Let's make bots choosing from a visible range (e.g. 1-200) or Random?
+                // If I change bot ID to be random 1-100, they might steal/clash with players.
+                // Safest: Bots take from 1-100 IF available, else random.
+                // BUT current logic was 2000+.
+                // Let's stick to 2000+ to avoid collisions, OR make them pick low numbers?
+                // The implementation plan didn't specify changing the ID range. 
+                // I will add the lock state anyway.
+
+                if (!gameStates.has(randomCardId)) {
+                    gameStates.set(randomCardId, { viewers: new Set(), takenBy: botUser.id });
+                    io.to(`game_${gameId}`).emit('cardStatesUpdate', { [randomCardId]: { viewers: [], takenBy: botUser.id } });
+                }
             }
 
             // Log? Maybe special type
             if (db.logTransaction) await db.logTransaction(botUser.id, 'house_bot_bet', 0, null, gameId, `House Bot Join (${CARDS_PER_BOT} Cards)`);
-        }
 
-        // Notify Update
-        const newPotRes = await db.query("SELECT pot FROM games WHERE id = $1", [gameId]);
-        io.to(`game_${gameId}`).emit('potUpdate', { pot: newPotRes.rows[0].pot });
+            // Notify Update (Pot increased)
+            io.to(`game_${gameId}`).emit('potUpdate', { pot: newPot });
 
-        // Trigger Countdown if enough players (House bots count as players for starting!)
-        const pCountRes = await db.query("SELECT COUNT(DISTINCT user_id) as count FROM player_cards WHERE game_id = $1", [gameId]);
-        if (parseInt(pCountRes.rows[0].count) >= 3) {
-            // Check if already starting? 
-            if (!pendingStarts.has(gameId)) {
-                const delay = 300;
-                console.log("🤖 House Bots triggered Countdown!");
-                startGameLogic(gameId, io, null, delay);
+            // Trigger Countdown if enough players (House bots count as players for starting!)
+            const pCountRes = await db.query("SELECT COUNT(DISTINCT user_id) as count FROM player_cards WHERE game_id = $1", [gameId]);
+            if (parseInt(pCountRes.rows[0].count) >= 3) {
+                // Check if already starting? 
+                if (!pendingStarts.has(gameId)) {
+                    // Slight extra delay for bots to finish?
+                    const startDelay = 300;
+                    console.log("🤖 House Bots triggered Countdown!");
+                    startGameLogic(gameId, io, null, startDelay);
+                }
             }
         }
 

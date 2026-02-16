@@ -3,6 +3,52 @@ import io from "socket.io-client";
 import BingoCard from "./BingoCard";
 import "./App.css";
 
+// Error Boundary to catch loading failures
+class ErrorBoundary extends React.Component {
+    constructor(props) {
+        super(props);
+        this.state = { hasError: false, error: null };
+    }
+
+    static getDerivedStateFromError(error) {
+        return { hasError: true, error };
+    }
+
+    componentDidCatch(error, errorInfo) {
+        console.error("React Error Boundary caught:", error, errorInfo);
+    }
+
+    render() {
+        if (this.state.hasError) {
+            return (
+                <div className="App login-screen" style={{ padding: '20px', textAlign: 'center' }}>
+                    <h2>⚠️ Loading Error</h2>
+                    <p>Something went wrong. Please try:</p>
+                    <ul style={{ listStyle: 'none', padding: 0 }}>
+                        <li>✓ Refresh the page (F5)</li>
+                        <li>✓ Clear browser cache</li>
+                        <li>✓ Check your internet connection</li>
+                        <li>✓ Reopen from Telegram</li>
+                    </ul>
+                    <button
+                        onClick={() => window.location.reload()}
+                        style={{ padding: '10px 20px', fontSize: '16px', marginTop: '20px', cursor: 'pointer' }}
+                    >
+                        🔄 Reload Page
+                    </button>
+                    <details style={{ marginTop: '20px', fontSize: '12px', color: '#666' }}>
+                        <summary>Technical Details</summary>
+                        <pre style={{ textAlign: 'left', overflow: 'auto' }}>
+                            {this.state.error?.toString()}
+                        </pre>
+                    </details>
+                </div>
+            );
+        }
+        return this.props.children;
+    }
+}
+
 const socket = io();
 const MAX_CARDS = 5;
 
@@ -363,12 +409,25 @@ function App() {
         if (userId && token) { setAuth({ userId: parseInt(userId, 10), token }); }
         else if (window.location.search.includes('user_id')) { setErrorMsg(t('invalid')); }
 
-        // Initial Connection Check
+        // Initial Connection Check with error handling
+        const handleConnectionError = (error) => {
+            console.error('Socket connection error:', error);
+            setErrorMsg('Connection error. Please refresh.');
+        };
+
+        socket.on('connect_error', handleConnectionError);
+        socket.on('connect_failed', handleConnectionError);
+
         if (socket.connected) {
             socket.emit('joinCheck');
         } else {
             socket.on('connect', () => socket.emit('joinCheck'));
         }
+
+        return () => {
+            socket.off('connect_error', handleConnectionError);
+            socket.off('connect_failed', handleConnectionError);
+        };
     }, []);
 
     useEffect(() => {
@@ -544,7 +603,8 @@ function App() {
 
     return (
         <div className="App">
-            {countdown > 0 && <div className="countdown-overlay"><div className="cnt-num">{countdown}</div><div className="cnt-txt">GAME STARTING</div></div>}
+            {/* {countdown > 0 && <div className="countdown-overlay"><div className="cnt-num">{countdown}</div><div className="cnt-txt">GAME STARTING</div></div>} */}
+
 
             <header>
                 <div className="header-info">
@@ -715,4 +775,12 @@ function App() {
         </div>
     );
 }
-export default App;
+
+// Wrap App with Error Boundary
+const AppWithErrorBoundary = () => (
+    <ErrorBoundary>
+        <App />
+    </ErrorBoundary>
+);
+
+export default AppWithErrorBoundary;
